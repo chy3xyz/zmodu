@@ -1,0 +1,172 @@
+name: ZModu CLI Release
+
+# Builds cross-platform zmodu binaries and publishes to npm + GitHub Releases.
+# Trigger: push a tag matching 'zmodu-v*' (e.g. 'zmodu-v0.6.0').
+
+on:
+  push:
+    tags: ["zmodu-v*"]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to release (without prefix, e.g. 0.6.0)"
+        required: true
+
+concurrency:
+  group: zmodu-release-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  ZIG_VERSION: "0.16.0"
+
+jobs:
+  # ── Cross-platform build ────────────────────────
+  build:
+    name: Build (${{ matrix.platform }}-${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: macos
+            arch: x86_64
+            runner: macos-latest
+            zig-target: x86_64-macos-none
+          - platform: macos
+            arch: aarch64
+            runner: macos-latest
+            zig-target: aarch64-macos-none
+          - platform: linux
+            arch: x86_64
+            runner: ubuntu-latest
+            zig-target: x86_64-linux-musl
+          - platform: linux
+            arch: aarch64
+            runner: ubuntu-latest
+            zig-target: aarch64-linux-musl
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Zig
+        run: |
+          # Download Zig for the RUNNER's native arch, then cross-compile via -Dtarget
+          case "${{ runner.arch }}" in
+            ARM64)  ZIG_ARCH="aarch64" ;;
+            X64)    ZIG_ARCH="x86_64"  ;;
+            *)      echo "Unsupported runner arch: ${{ runner.arch }}"; exit 1 ;;
+          esac
+          case "${{ runner.os }}" in
+            macOS)  ZIG_PLATFORM="macos"  ;;
+            Linux)  ZIG_PLATFORM="linux"  ;;
+            *)      echo "Unsupported runner os: ${{ runner.os }}"; exit 1 ;;
+          esac
+          ZIG_URL="https://ziglang.org/download/${ZIG_VERSION}/zig-${ZIG_ARCH}-${ZIG_PLATFORM}-${ZIG_VERSION}.tar.xz"
+          echo "Downloading Zig (runner native) from $ZIG_URL"
+          curl -fsSL "$ZIG_URL" -o zig.tar.xz || { echo "Download failed"; exit 1; }
+          mkdir -p "$RUNNER_TEMP/zig"
+          tar -xf zig.tar.xz -C "$RUNNER_TEMP/zig" --strip-components=1 || { echo "Extract failed"; exit 1; }
+          echo "$RUNNER_TEMP/zig" >> $GITHUB_PATH
+          export PATH="$RUNNER_TEMP/zig:$PATH"
+          zig version
+          echo "Cross-compiling to target: ${{ matrix.zig-target }}"
+
+      - name: Build zmodu
+        run: |
+          cd tools/zmodu
+          zig build -Dtarget=${{ matrix.zig-target }} -Doptimize=ReleaseSafe
+          mkdir -p release
+          cp zig-out/bin/zmodu release/zmodu
+          cd release
+          tar -czf "zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" zmodu
+          sha256sum "zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz" > "zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: zmodu-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            tools/zmodu/release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+            tools/zmodu/release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
+
+  # ── GitHub Release ──────────────────────────────
+  github-release:
+    name: GitHub Release
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: zmodu-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          name: "zmodu ${{ github.ref_name }}"
+          body: |
+            ## zmodu CLI ${{ github.ref_name }}
+
+            Cross-platform binaries for the ZigModu code generation tool.
+
+            ### Installation
+
+            ```bash
+            # Via npm (recommended)
+            npm install -g @chy3xyz/zmodu
+
+            # Manual download
+            curl -fsSL https://github.com/chy3xyz/zmodu/releases/download/${{ github.ref_name }}/zmodu-macos-aarch64.tar.gz | tar -xzf -
+            sudo mv zmodu /usr/local/bin/
+            ```
+          files: release-assets/*
+          generate_release_notes: false
+
+  # ── npm Publish ─────────────────────────────────
+  npm-publish:
+    name: npm Publish
+    runs-on: ubuntu-latest
+    needs: [github-release]
+    if: success()
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          registry-url: "https://registry.npmjs.org"
+
+      - name: Set version
+        run: |
+          # On tag push: strip 'zmodu-v' prefix (zmodu-v0.6.0 → 0.6.0)
+          # On workflow_dispatch: use the 'version' input directly
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            VERSION="${{ inputs.version }}"
+          else
+            TAG="${{ github.ref_name }}"
+            VERSION="${TAG#zmodu-v}"
+          fi
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+
+      - name: Update package.json version
+        run: |
+          cd tools/zmodu/npm
+          node -e "
+            const pkg = require('./package.json');
+            pkg.version = process.env.VERSION;
+            require('fs').writeFileSync('package.json', JSON.stringify(pkg, null, 2) + '\n');
+          "
+          echo "Publishing zmodu@$(node -p 'require(\"./package.json\").version')"
+
+      - name: Publish to npm
+        run: |
+          cd tools/zmodu/npm
+          npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

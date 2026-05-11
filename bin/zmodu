@@ -1,0 +1,37 @@
+#!/usr/bin/env bash
+# zmodu — Shell wrapper for the ZigModu CLI binary.
+# On first run, the postinstall script downloads the native binary to
+# this directory as `zmodu-bin`. This wrapper forwards all arguments.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+BIN_PATH="$SCRIPT_DIR/zmodu-bin"
+DATA_DIR="${HOME}/.zmodu"
+VERSION="0.6.1"
+
+# Try the local bundled binary first
+if command -v "$BIN_PATH" &>/dev/null; then
+  exec "$BIN_PATH" "$@"
+elif [ -x "$BIN_PATH" ]; then
+  exec "$BIN_PATH" "$@"
+fi
+
+# Fall back to versioned cache
+CACHED_BIN="$DATA_DIR/zmodu-$VERSION"
+if [ -x "$CACHED_BIN" ]; then
+  exec "$CACHED_BIN" "$@"
+fi
+
+# Not installed yet — guide the user
+cat >&2 <<EOF
+zmodu: binary not found.
+
+Run the postinstall script to download it:
+  node "$SCRIPT_DIR/../install.js"
+
+Or install from source:
+  git clone https://github.com/chy3xyz/zigmodu.git
+  cd zigmodu/tools/zmodu && zig build install-zmodu
+EOF
+exit 1

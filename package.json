@@ -1,0 +1,40 @@
+{
+  "name": "@chy3xyz/zmodu",
+  "version": "0.6.1",
+  "description": "ZigModu CLI \u2014 code generation tool for the ZigModu framework",
+  "homepage": "https://github.com/chy3xyz/zmodu",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/chy3xyz/zmodu.git"
+  },
+  "license": "MIT",
+  "bin": {
+    "zmodu": "bin/zmodu"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": [
+    "install.js",
+    "bin/"
+  ],
+  "os": [
+    "darwin",
+    "linux"
+  ],
+  "cpu": [
+    "x64",
+    "arm64"
+  ],
+  "keywords": [
+    "zig",
+    "zigmodu",
+    "codegen",
+    "orm",
+    "framework",
+    "cli"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
