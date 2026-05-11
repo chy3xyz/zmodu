@@ -73,7 +73,6 @@ jobs:
 
       - name: Build zmodu
         run: |
-          cd tools/zmodu
           zig build -Dtarget=${{ matrix.zig-target }} -Doptimize=ReleaseSafe
           mkdir -p release
           cp zig-out/bin/zmodu release/zmodu
@@ -86,8 +85,8 @@ jobs:
         with:
           name: zmodu-${{ matrix.platform }}-${{ matrix.arch }}
           path: |
-            tools/zmodu/release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
-            tools/zmodu/release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
+            release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz
+            release/zmodu-${{ matrix.platform }}-${{ matrix.arch }}.tar.gz.sha256
 
   # ── GitHub Release ──────────────────────────────
   github-release:
@@ -156,7 +155,7 @@ jobs:
 
       - name: Update package.json version
         run: |
-          cd tools/zmodu/npm
+          cd npm
           node -e "
             const pkg = require('./package.json');
             pkg.version = process.env.VERSION;
@@ -166,7 +165,7 @@ jobs:
 
       - name: Publish to npm
         run: |
-          cd tools/zmodu/npm
+          cd npm
           npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
