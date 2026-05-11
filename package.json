@@ -1,6 +1,6 @@
 {
   "name": "@chy3xyz/zmodu",
-  "version": "0.6.1",
+  "version": "0.7.0",
   "description": "ZigModu CLI \u2014 code generation tool for the ZigModu framework",
   "homepage": "https://github.com/chy3xyz/zmodu",
   "repository": {
