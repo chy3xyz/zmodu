@@ -438,52 +438,108 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     defer allocator.free(tests_path);
     try writeFile(io, tests_path, tests_zig);
 
+    // Generate AGENTS.md — AI development guide
+    const agents_md = try generateAgentsMd(allocator, project_name);
+    defer allocator.free(agents_md);
+    const agents_path = try std.fmt.allocPrint(allocator, "{s}/AGENTS.md", .{project_name});
+    defer allocator.free(agents_path);
+    try writeFile(io, agents_path, agents_md);
+
     // Generate .ai/prompts/ directory with AI prompt templates
     const ai_prompts_dir = try std.fmt.allocPrint(allocator, "{s}/.ai/prompts", .{project_name});
     defer allocator.free(ai_prompts_dir);
     try std.Io.Dir.cwd().createDirPath(io, ai_prompts_dir);
 
-    const add_module_prompt =
-        \\# Add a new module to this project
+    const prompts = [_]struct { file: []const u8, content: []const u8 }{
+        .{ .file = "add_module.md", .content =
+        \\# Add a new module
         \\
         \\## Task
-        \\Create a new ZigModu module following the standard structure:
-        \\- module.zig — declaration (info, init, deinit, healthCheck)
-        \\- model.zig — data structures
-        \\- persistence.zig — ORM repositories
-        \\- service.zig — business logic + event types
-        \\- api.zig — HTTP REST routes
-        \\- root.zig — barrel exports
+        \\Create src/modules/<name>/ with 6 files following the AGENTS.md module contract.
         \\
-        \\## Steps
-        \\1. Run `zmodu module <name>` to generate scaffold
-        \\2. Or create src/modules/<name>/ directory manually
-        \\3. Add module to src/main.zig builder .build(.{ ... })
-        \\4. Run `zig build test` to verify
+        \\## Files to create
+        \\1. module.zig — info + init/deinit + registerHealthChecks
+        \\2. model.zig — pub const X = struct { pub const sql_table_name, fields };
+        \\3. persistence.zig — XRepo() accessors returning data.Repository(T)
+        \\4. service.zig — XService with CRUD delegation + EventBus(T)
+        \\5. api.zig — XApi with registerRoutes() + resolve() helper
+        \\6. root.zig — barrel re-exports
         \\
-    ;
-    const add_module_path = try std.fmt.allocPrint(allocator, "{s}/add_module.md", .{ai_prompts_dir});
-    defer allocator.free(add_module_path);
-    try writeFile(io, add_module_path, add_module_prompt);
-
-    const project_context =
+        \\## Wiring (in src/main.zig)
+        \\- Import: const <name> = @import("modules/<name>/root.zig");
+        \\- Persistence: var <name>_p = <name>.persistence.XPersistence.init(backend);
+        \\- Service: var <name>_svc = <name>.service.XService.init(&<name>_p);
+        \\- API: var <name>_api = <name>.api.XApi.init(&<name>_svc);
+        \\- Routes: try <name>_api.registerRoutes(&root);
+        \\- Lifecycle: .build(.{ ..., <name>.module, ... })
+        \\
+        },
+        .{ .file = "add_endpoint.md", .content =
+        \\# Add a REST endpoint
+        \\
+        \\## In api.zig registerRoutes()
+        \\```zig
+        \\try group.get("/resource", listHandler, @ptrCast(@alignCast(self)));
+        \\try group.get("/resource/:id", getHandler, @ptrCast(@alignCast(self)));
+        \\try group.post("/resource", createHandler, @ptrCast(@alignCast(self)));
+        \\```
+        \\
+        \\## Handler pattern
+        \\```zig
+        \\fn listHandler(ctx: *http.Context) !void {
+        \\    const s = resolve(ctx);
+        \\    const page = std.fmt.parseInt(usize, ctx.query.get("page") orelse "0", 10) catch 0;
+        \\    const size = std.fmt.parseInt(usize, ctx.query.get("size") orelse "10", 10) catch 10;
+        \\    const result = try s.service.listThings(page, size);
+        \\    try ctx.jsonStruct(200, result);
+        \\}
+        \\```
+        \\
+        },
+        .{ .file = "add_business_logic.md", .content =
+        \\# Add business logic
+        \\
+        \\## In service.zig
+        \\Add methods to XService struct after the generated CRUD methods.
+        \\Inject dependencies via the persistence field.
+        \\Publish events via self.publish(event).
+        \\
+        \\## Event types
+        \\Extend XEvent union with new variants:
+        \\```zig
+        \\pub const XEvent = union(enum) {
+        \\    thing_created: struct { id: i64 },
+        \\    thing_updated: struct { id: i64 },
+        \\    custom_event: struct { data: []const u8 },
+        \\};
+        \\```
+        \\
+        },
+        .{ .file = "context.md", .content =
         \\# Project AI Context
         \\
-        \\## Framework: ZigModu v0.9.2 (Zig 0.16.0)
-        \\## Module structure: src/modules/<name>/module.zig
-        \\## Entry point: src/main.zig
+        \\## Stack
+        \\- Framework: ZigModu v0.9.4 (Zig 0.16.0)
+        \\- Database: MySQL/PostgreSQL/SQLite via sqlx
+        \\- HTTP: zigmodu.http.Server (async fiber-based)
         \\
-        \\## Key conventions:
-        \\- Dependencies declared in module.zig: api.Module{ .dependencies = &.{...} }
-        \\- Each module has init() !void and deinit() void lifecycle hooks
+        \\## Conventions
         \\- Domain imports: const http = zigmodu.http; const data = zigmodu.data;
-        \\- RESTful APIs: GET/POST/PUT/DELETE on /resource and /resource/:id
-        \\- Build with: zig build run
+        \\- Module lifecycle: init() at startup → deinit() at shutdown (reverse order)
+        \\- Dependencies: declared in module.zig info.dependencies
+        \\- Health: registerHealthChecks() per module + HealthEndpoint in main.zig
+        \\- API: RESTful via http.RouteGroup, handlers use resolve(ctx) helper
+        \\- ORM: data.Repository(T) returned by persistence Repo accessors
+        \\- Events: typed EventBus(T) in service, publish() method
         \\
-    ;
-    const context_path = try std.fmt.allocPrint(allocator, "{s}/context.md", .{ai_prompts_dir});
-    defer allocator.free(context_path);
-    try writeFile(io, context_path, project_context);
+        },
+    };
+
+    for (prompts) |p| {
+        const p_path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ ai_prompts_dir, p.file });
+        defer allocator.free(p_path);
+        try writeFile(io, p_path, p.content);
+    }
 
     std.log.info("Project {s} created successfully!", .{project_name});
     std.log.info("  cd {s} && zig build run", .{project_name});
@@ -766,6 +822,107 @@ fn finalizeBuildZigZonFingerprint(io: std.Io, allocator: std.mem.Allocator, proj
     const zon = try generateBuildZonImpl(allocator, project_name, fp);
     defer allocator.free(zon);
     try writeFile(io, zon_path, zon);
+}
+
+fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]const u8 {
+    var buf: std.ArrayList(u8) = .empty;
+    try buf.print(allocator, "# AGENTS.md — AI Development Guide\n\n## Project: {s}\n## Framework: ZigModu v0.9.4 (Zig 0.16.0)\n\n", .{project_name});
+    try buf.appendSlice(allocator,
+        \\## Quick Commands
+        \\```
+        \\zig build            # compile
+        \\zig build run        # run (reads HTTP_PORT, DB_* env vars)
+        \\zig build test       # run all tests
+        \\zig fmt src/         # format code
+        \\```
+        \\
+        \\## Project Structure
+        \\```
+        \\src/
+        \\  main.zig           # entry point, DB setup, module wiring, HTTP server
+        \\  tests.zig          # top-level test suite
+        \\  modules/
+        \\    <name>/
+        \\      module.zig     # info + init/deinit + registerHealthChecks
+        \\      model.zig      # data structs (sql_table_name + fields)
+        \\      persistence.zig # ORM repository accessors
+        \\      service.zig    # business logic + event types + CRUD
+        \\      api.zig        # REST handlers + route registration
+        \\      root.zig       # barrel re-exports
+        \\```
+        \\
+        \\## Module Contract (every module MUST have)
+        \\```zig
+        \\pub const info = api.Module{ .name = "x", .dependencies = &.{}, .is_internal = false };
+        \\pub fn init() !void { ... }
+        \\pub fn deinit() void { ... }
+        \\pub fn registerHealthChecks(endpoint: *zigmodu.HealthEndpoint) !void { ... }
+        \\```
+        \\
+        \\## Import Conventions
+        \\```zig
+        \\// module.zig — api + http domain
+        \\const api = zigmodu.api;
+        \\const http = zigmodu.http;
+        \\
+        \\// persistence.zig — data domain only
+        \\const data = @import("zigmodu").data;
+        \\
+        \\// service.zig — data + EventBus
+        \\const data = zigmodu.data;
+        \\
+        \\// api.zig — http domain only
+        \\const http = @import("zigmodu").http;
+        \\```
+        \\
+        \\## Adding a Module
+        \\1. Create `src/modules/<name>/` with 6 files (see structure above)
+        \\2. Import in `src/main.zig`: `const <name> = @import("modules/<name>/root.zig");`
+        \\3. Add persistence: `var <name>_p = <name>.persistence.XPersistence.init(backend);`
+        \\4. Add service: `var <name>_svc = <name>.service.XService.init(&<name>_p);`
+        \\5. Add API: `var <name>_api = <name>.api.XApi.init(&<name>_svc);`
+        \\6. Register routes: `try <name>_api.registerRoutes(&root);`
+        \\7. Add to Application: `.build(.{ ..., <name>.module, ... })`
+        \\
+        \\## Adding an API Endpoint
+        \\```zig
+        \\// In api.zig registerRoutes():
+        \\try group.get("/resource", listHandler, @ptrCast(@alignCast(self)));
+        \\try group.post("/resource", createHandler, @ptrCast(@alignCast(self)));
+        \\
+        \\// Handler pattern:
+        \\fn listHandler(ctx: *http.Context) !void {
+        \\    const s = resolve(ctx);
+        \\    const result = try s.service.listThings(page, size);
+        \\    try ctx.jsonStruct(200, result);
+        \\}
+        \\```
+        \\
+        \\## Environment Variables
+        \\```
+        \\HTTP_PORT=8080     # server port
+        \\DB_HOST=127.0.0.1  # database host
+        \\DB_PORT=3306       # database port
+        \\DB_USER=root       # database user
+        \\DB_PASS=           # database password
+        \\DB_NAME=heysen     # database name
+        \\JWT_SECRET=        # auth secret (with --with-auth)
+        \\```
+        \\
+        \\## Key Framework Types
+        \\| Type | Path | Use |
+        \\|------|------|-----|
+        \\| Context | zigmodu.http.Context | Request/response |
+        \\| Server | zigmodu.http.Server | HTTP server |
+        \\| RouteGroup | zigmodu.http.RouteGroup | Route registration |
+        \\| SqlxBackend | zigmodu.data.SqlxBackend | DB backend |
+        \\| Repository(T) | zigmodu.data.Repository(T) | Typed ORM repo |
+        \\| HealthEndpoint | zigmodu.HealthEndpoint | Health checks |
+        \\| EventBus(T) | zigmodu.EventBus(T) | Typed event bus |
+        \\| Application | zigmodu.Application | App lifecycle |
+        \\
+    );
+    return buf.toOwnedSlice(allocator);
 }
 
 fn generateMainZig(allocator: std.mem.Allocator, project_name: []const u8) ![]const u8 {
@@ -2665,6 +2822,13 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     const env_path = try std.fmt.allocPrint(allocator, "{s}/.env.example", .{project_dir});
     defer allocator.free(env_path);
     try writeFileGen(io, env_path, env_example, gen_opts);
+
+    // 11. Generate AGENTS.md — AI development guide
+    const agents_md = try generateAgentsMd(allocator, sopts.project_name);
+    defer allocator.free(agents_md);
+    const agents_path = try std.fmt.allocPrint(allocator, "{s}/AGENTS.md", .{project_dir});
+    defer allocator.free(agents_path);
+    try writeFileGen(io, agents_path, agents_md, gen_opts);
 
     if (!sopts.dry_run) {
         try finalizeBuildZigZonFingerprint(io, allocator, sopts.project_name, zon_path);
