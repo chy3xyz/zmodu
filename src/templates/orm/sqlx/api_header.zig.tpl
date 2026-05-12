@@ -12,8 +12,8 @@ pub const <<PASCAL_MODULE>>Api = struct {
         return .{ .service = svc };
     }
 
-    fn resolve(ctx: *http.http_server.Context) *<<PASCAL_MODULE>>Api {
+    fn resolve(ctx: *http.Context) *<<PASCAL_MODULE>>Api {
         return @ptrCast(@alignCast(ctx.user_data orelse unreachable));
     }
 
-    pub fn registerRoutes(self: *<<PASCAL_MODULE>>Api, group: *http.http_server.RouteGroup) !void {
+    pub fn registerRoutes(self: *<<PASCAL_MODULE>>Api, group: *http.RouteGroup) !void {

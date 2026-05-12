@@ -14,7 +14,7 @@ const Command = enum {
     migration,
     health,
     config,
-    test,
+    @"test",
     help,
     version,
 };
@@ -187,7 +187,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .migration => try cmdMigration(io, allocator, cmd_args),
         .health => try cmdHealth(io, allocator, cmd_args),
         .config => try cmdConfig(io, allocator, cmd_args),
-        .test => try cmdTest(io, allocator, cmd_args),
+        .@"test" => try cmdTest(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -291,7 +291,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "migrate")) return .migration;
     if (std.mem.eql(u8, cmd, "health")) return .health;
     if (std.mem.eql(u8, cmd, "config")) return .config;
-    if (std.mem.eql(u8, cmd, "test")) return .test;
+    if (std.mem.eql(u8, cmd, "test")) return .@"test";
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -319,7 +319,7 @@ fn printUsage() void {
         \\  migration <n>   Generate Flyway-style migration file (V{timestamp}__{name}.sql)
         \\  health          Generate health check endpoint boilerplate
         \\  config          Generate ExternalizedConfig validator boilerplate
-  test <module>   Generate integration test scaffolding
+        \\  test <module>   Generate integration test scaffolding
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -338,7 +338,7 @@ fn printUsage() void {
         \\  zmodu migration add-index --dir src/migrations
         \\  zmodu health --out src/modules/app
         \\  zmodu config --keys DB_HOST,DB_PORT,DB_NAME
-  zmodu test user
+        \\  zmodu test user
         \\
         \\Flags (where supported):
         \\  --dry-run   Preview writes / mkdir; no files created
@@ -1316,7 +1316,7 @@ fn generateModulePersistence(allocator: std.mem.Allocator, module_name: []const 
         const method_name = try toCamelCase(allocator, table.name);
         defer allocator.free(method_name);
 
-        try buf.print(allocator, "    pub fn {s}Repo(self: *{s}Persistence) data.orm.Orm(data.SqlxBackend).Repository(model.{s}) {{\n", .{ method_name, pascal_module, model_name });
+        try buf.print(allocator, "    pub fn {s}Repo(self: *{s}Persistence) data.Repository(model.{s}) {{\n", .{ method_name, pascal_module, model_name });
         try buf.appendSlice(allocator, "        return .{ .orm = &self.orm };\n");
         try buf.appendSlice(allocator, "    }\n\n");
     }
@@ -1402,7 +1402,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         defer allocator.free(model_name);
 
         // list
-        try buf.print(allocator, "    fn list{s}s(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.print(allocator, "    fn list{s}s(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const page = std.fmt.parseInt(usize, ctx.query.get(\"page\") orelse \"0\", 10) catch 0;\n");
         try buf.appendSlice(allocator, "        const size = std.fmt.parseInt(usize, ctx.query.get(\"size\") orelse \"10\", 10) catch 10;\n");
@@ -1411,7 +1411,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "    }\n\n");
 
         // get
-        try buf.print(allocator, "    fn get{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.print(allocator, "    fn get{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
@@ -1420,7 +1420,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "    }\n\n");
 
         // create
-        try buf.print(allocator, "    fn create{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.print(allocator, "    fn create{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch |_| {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
@@ -1429,7 +1429,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "    }\n\n");
 
         // update
-        try buf.print(allocator, "    fn update{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.print(allocator, "    fn update{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch |_| {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
@@ -1438,7 +1438,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "    }\n\n");
 
         // delete
-        try buf.print(allocator, "    fn delete{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.print(allocator, "    fn delete{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
         try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
@@ -1987,29 +1987,27 @@ fn cmdHealth(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         \\const std = @import("std");
         \\const zigmodu = @import("zigmodu");
         \\
-        \\const http = zigmodu.http;
+        \\const HealthEndpoint = zigmodu.HealthEndpoint;
         \\
-        \\pub fn healthCheck(ctx: *http.http_server.Context) !void {
-        \\    try ctx.json(200, "{\"status\":\"UP\"}");
+        \\pub fn initHealth() HealthEndpoint {
+        \\    return HealthEndpoint.init(std.heap.page_allocator);
         \\}
         \\
-        \\// Add richer health checks by extending this module:
-        \\//
-        \\// Database check:
-        \\// pub fn dbHealthCheck(db_client: anytype) http.http_server.HandlerFn {
-        \\//     const CheckCtx = struct { db: @TypeOf(db_client) };
-        \\//     var ctx = CheckCtx{ .db = db_client };
-        \\//     return struct {
-        \\//         fn check(ctx_: *http.http_server.Context) !void {
-        \\//             const self: *CheckCtx = @ptrCast(@alignCast(ctx_.user_data));
-        \\//             _ = self.db.ping() catch {
-        \\//                 try ctx_.json(503, "{\"status\":\"DOWN\",\"reason\":\"db\"}");
-        \\//                 return;
-        \\//             };
-        \\//             try ctx_.json(200, "{\"status\":\"UP\"}");
-        \\//         }
-        \\//     }.check;
-        \\// }
+        \\pub fn registerHealthChecks(endpoint: *HealthEndpoint) !void {
+        \\    try endpoint.registerCheck("liveness", "Process liveness", HealthEndpoint.alwaysUp);
+        \\    try endpoint.registerCheck("readiness", "Service readiness", HealthEndpoint.alwaysUp);
+        \\}
+        \\
+        \\// Wire into HTTP server:
+        \\//   const hc = initHealth();
+        \\//   defer hc.deinit();
+        \\//   try registerHealthChecks(&hc);
+        \\//   try group.get("/health/live", zigmodu.HealthEndpoint.handleLiveness, null);
+        \\//   try group.get("/health/ready", zigmodu.HealthEndpoint.handleReadiness(&hc), null);
+        \\
+        \\// Add custom checks with context:
+        \\//   try endpoint.registerCheckWithContext("database", "DB connectivity",
+        \\//       HealthEndpoint.databaseCheck, @ptrCast(&db_pool));
         \\
     ;
 
@@ -2155,27 +2153,27 @@ fn cmdTest(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !
     var buf = std.ArrayList(u8).empty;
     defer buf.deinit(allocator);
     try buf.print(allocator,
-        \const std = @import("std");
-        \const zigmodu = @import("zigmodu");
-        \const module = @import("module.zig");
-        \const service = @import("service.zig");
-        \const model = @import("model.zig");
-        \
-        \test "{s}: service health check" {{
-        \    try zigmodu.HealthEndpoint.alwaysUp(null);
-        \}}
-        \
-        \test "{s}: module lifecycle init/deinit" {{
-        \    try module.init();
-        \    module.deinit();
-        \}}
-        \
-        \test "{s}: CRUD integration" {{
-        \    // Add database-dependent tests here
-        \    const allocator = std.testing.allocator;
-        \    _ = allocator;
-        \}}
-        \
+        \\const std = @import("std");
+        \\const zigmodu = @import("zigmodu");
+        \\const module = @import("module.zig");
+        \\const service = @import("service.zig");
+        \\const model = @import("model.zig");
+        \\
+        \\test "{s}: service health check" {{
+        \\    try zigmodu.HealthEndpoint.alwaysUp(null);
+        \\}}
+        \\
+        \\test "{s}: module lifecycle init/deinit" {{
+        \\    try module.init();
+        \\    module.deinit();
+        \\}}
+        \\
+        \\test "{s}: CRUD integration" {{
+        \\    // Add database-dependent tests here
+        \\    const allocator = std.testing.allocator;
+        \\    _ = allocator;
+        \\}}
+        \\
     , .{ module_name, module_name, module_name });
 
     try writeFile(io, fp, buf.items);
@@ -2430,7 +2428,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        return .{{ .ext = ext }};
             \\    }}
             \\
-            \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http.http_server.RouteGroup) !void {{
+            \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http.RouteGroup) !void {{
             \\        _ = self;
             \\        // Add custom routes:
             \\        // try group.get("/{s}/custom", myHandler, @ptrCast(@alignCast(self)));
@@ -2685,17 +2683,14 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         \\    const db_user = env.get("DB_USER") orelse "root";
         \\    const db_pass = env.get("DB_PASS") orelse "";
         \\    const db_name = env.get("DB_NAME") orelse "heysen";
-        \\    const http_port = if (env.get("HTTP_PORT")) |p| std.fmt.parseInt(u16, p, 10) catch 8080 else 8080;
         \\
         \\    const db_cfg = zigmodu.data.sqlx.Config{
         \\        .driver = .mysql, .host = db_host, .port = std.fmt.parseInt(u16, db_port, 10) catch 3306,
         \\        .database = db_name, .username = db_user, .password = db_pass,
         \\        .max_open_conns = 10, .max_idle_conns = 5,
         \\    };
-        \\
-        \\    var db_client = zigmodu.data.sqlx.Client.init(allocator, init.io, db_cfg);
+        \\    var db_client = try zigmodu.data.Client.open(allocator, init.io, db_cfg);
         \\    defer db_client.deinit();
-        \\    try db_client.connect();
         \\    std.log.info("DB connected: {s}@{s}:{s}/{s}", .{ db_user, db_host, db_port, db_name });
         \\
         \\    const backend = zigmodu.data.SqlxBackend{ .allocator = allocator, .client = &db_client };
@@ -2740,15 +2735,29 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         );
     }
 
-    // HTTP server + route registration
+    // HTTP server + health
     try buf.appendSlice(allocator,
         \\
         \\    // -- HTTP Server --
-        \\    var server = zigmodu.http.http_server.Server.init(init.io, allocator, http_port);
+        \\    var server = try zigmodu.http.Server.fromEnv(init.io, allocator);
         \\    defer server.deinit();
         \\    server.withGracefulDrain(zigmodu.getInFlightCounter());
+        \\
+        \\    // -- Health Checks --
+        \\    var health_endpoint = zigmodu.HealthEndpoint.init(allocator);
+        \\    defer health_endpoint.deinit();
+        \\    try health_endpoint.registerCheck("liveness", "Process liveness", zigmodu.HealthEndpoint.alwaysUp);
+        \\
+    );
+
+    if (sopts.with_resilience) {
+        try buf.appendSlice(allocator, "    try health_endpoint.registerCheckWithContext(\"database\", \"DB connectivity\", zigmodu.HealthEndpoint.databaseCheck, @ptrCast(&db_client));\n");
+    }
+
+    try buf.appendSlice(allocator,
         \\    var root = server.group("/api");
-        \\    try root.get("/health", healthCheck, null);
+        \\    try root.get("/health/live", zigmodu.HealthEndpoint.handleLiveness, null);
+        \\    try root.get("/health/ready", zigmodu.HealthEndpoint.handleReadiness(&health_endpoint), null);
         \\
         \\
     );
@@ -2770,7 +2779,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         try buf.appendSlice(allocator, "\n    // -- Cluster --\n    const node_id = try std.fmt.allocPrint(allocator, \"node-{d}\", .{@as(u64, @intCast(std.time.milliTimestamp()))});\n    var dist_bus = try zigmodu.DistributedEventBus.init(allocator, init.io, node_id);\n    defer dist_bus.deinit();\n    try dist_bus.start(9091);\n");
     }
     if (sopts.with_metrics) {
-        try buf.appendSlice(allocator, "\n    // -- Prometheus /metrics --\n    try zigmodu.observability.PrometheusMetrics.registerMetricsRoute(&server);\n");
+        try buf.appendSlice(allocator, "\n    // -- Prometheus /metrics --\n    var metrics = zigmodu.observability.PrometheusMetrics.init(allocator);\n    defer metrics.deinit();\n    try metrics.registerMetricsRoute(&server);\n");
     }
 
     // Application lifecycle with builder pattern
@@ -2785,12 +2794,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             try buf.print(allocator, "{s}.module, ", .{name});
         }
     }
-    try buf.appendSlice(allocator, "});\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthCheck(ctx: *zigmodu.http.http_server.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n");
-
-    // With DB: generate a richer health probe
-    if (sopts.with_resilience) {
-        try buf.appendSlice(allocator, "\nfn dbHealthCheck(backend: *zigmodu.data.SqlxBackend) http.http_server.HandlerFn {\n    const Ctx = struct { backend: *zigmodu.data.SqlxBackend };\n    var c = Ctx{ .backend = backend };\n    return struct {\n        fn check(ctx: *zigmodu.http.http_server.Context) !void {\n            const s: *Ctx = @ptrCast(@alignCast(ctx.user_data orelse unreachable));\n            if (s.backend.client.ping()) {\n                try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\",\\\"db\\\":\\\"connected\\\"}\");\n            } else |_| {\n                try ctx.json(503, \"{\\\"status\\\":\\\"DOWN\\\",\\\"db\\\":\\\"unreachable\\\"}\");\n            }\n        }\n    }.check;\n}\n");
-    }
+    try buf.appendSlice(allocator, "});\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n");
 
     return buf.toOwnedSlice(allocator);
 }

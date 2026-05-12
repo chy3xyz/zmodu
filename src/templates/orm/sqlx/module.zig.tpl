@@ -21,6 +21,6 @@ pub fn deinit() void {
     std.log.info("[{s}] shutting down", .{info.name});
 }
 
-pub fn healthCheck(ctx: *http.http_server.Context) !void {
-    try ctx.json(200, "{\"status\":\"UP\",\"module\":\"<<MODULE_NAME>>\"}");
+pub fn registerHealthChecks(endpoint: *zigmodu.HealthEndpoint) !void {
+    try endpoint.registerCheck("<<MODULE_NAME>>", "<<MODULE_NAME>> module health", zigmodu.HealthEndpoint.alwaysUp);
 }
