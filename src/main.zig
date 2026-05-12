@@ -19,15 +19,12 @@ const Command = enum {
     version,
 };
 
-const CodeStyle = enum { default, java };
-
 const GenOptions = struct {
     dry_run: bool = false,
     force: bool = false,
     data_only: bool = false,
     split: bool = false,
     enable_events: bool = false,
-    style: CodeStyle = .default,
 };
 
 const OrmCli = struct {
@@ -49,7 +46,6 @@ fn isOrmLongOption(token: []const u8) bool {
         std.mem.eql(u8, token, "--out") or
         std.mem.eql(u8, token, "--module") or
         std.mem.eql(u8, token, "--backend") or
-        std.mem.eql(u8, token, "--style") or
         std.mem.eql(u8, token, "--dry-run") or
         std.mem.eql(u8, token, "--force") or
         std.mem.eql(u8, token, "--data-only") or
@@ -96,16 +92,6 @@ fn parseOrmCli(args: []const []const u8) ParseOrmCliResult {
             opts.force = true;
         } else if (std.mem.eql(u8, args[i], "--data-only")) {
             opts.data_only = true;
-        } else if (std.mem.eql(u8, args[i], "--style")) {
-            if (i + 1 >= args.len) return .{ .err_missing_value = "--style" };
-            const val = args[i + 1];
-            if (isOrmLongOption(val)) return .{ .err_missing_value = "--style" };
-            if (std.mem.eql(u8, val, "java")) {
-                opts.style = .java;
-            } else if (!std.mem.eql(u8, val, "default")) {
-                return .{ .err_unknown_flag = val };
-            }
-            i += 1;
         } else if (std.mem.eql(u8, args[i], "--split")) {
             opts.split = true;
         } else if (std.mem.eql(u8, args[i], "--enable-events")) {
@@ -155,8 +141,8 @@ fn isSafeModuleDirName(name: []const u8) bool {
 }
 
 /// Released tarball for `zmodu new` projects (hash from `zig build` / missing-hash hint, Zig 0.16).
-const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.7.0.tar.gz";
-const zigmodu_zon_hash = "zigmodu-0.6.0-U40vsx_tDAB5XXZFElS7CWizSWV_JA9ZZly21CxeYg2A";
+const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.9.2.tar.gz";
+const zigmodu_zon_hash = "zigmodu-0.9.2-U40vs7C-EwBBe213BH6vaSarawHUPw1UT-CR61I2UyIw";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -366,7 +352,7 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu version 0.8.0", .{});
+    std.log.info("zmodu version 0.9.2", .{});
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -402,8 +388,6 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     const dirs = [_][]const u8{
         "src",
         "src/modules",
-        "src/events",
-        "src/api",
         "tests",
     };
 
@@ -464,19 +448,17 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         \\
         \\## Task
         \\Create a new ZigModu module following the standard structure:
-        \\- module.zig — declaration layer (info, init, deinit)
+        \\- module.zig — declaration (info, init, deinit, healthCheck)
         \\- model.zig — data structures
         \\- persistence.zig — ORM repositories
-        \\- service.zig — business logic
-        \\- api.zig — HTTP routes
+        \\- service.zig — business logic + event types
+        \\- api.zig — HTTP REST routes
         \\- root.zig — barrel exports
-        \\- test.zig — tests
-        \\- _ai.zig — AI context index
         \\
         \\## Steps
-        \\1. Read src/modules/<existing>/_ai.zig for context pattern
-        \\2. Create src/modules/<name>/ directory with all files
-        \\3. Add module to src/main.zig scanModules call
+        \\1. Run `zmodu module <name>` to generate scaffold
+        \\2. Or create src/modules/<name>/ directory manually
+        \\3. Add module to src/main.zig builder .build(.{ ... })
         \\4. Run `zig build test` to verify
         \\
     ;
@@ -487,15 +469,16 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     const project_context =
         \\# Project AI Context
         \\
-        \\## Framework: ZigModu v0.7.0 (Zig 0.16.0)
+        \\## Framework: ZigModu v0.9.2 (Zig 0.16.0)
         \\## Module structure: src/modules/<name>/module.zig
         \\## Entry point: src/main.zig
         \\
         \\## Key conventions:
-        \\- Dependencies must be declared in module.zig info.dependencies
-        \\- All modules have init() and deinit() lifecycle hooks
-        \\- Extension points: service_ext.zig, api_ext.zig (survive regeneration)
-        \\- AI context: each module has _ai.zig with metadata
+        \\- Dependencies declared in module.zig: api.Module{ .dependencies = &.{...} }
+        \\- Each module has init() !void and deinit() void lifecycle hooks
+        \\- Domain imports: const http = zigmodu.http; const data = zigmodu.data;
+        \\- RESTful APIs: GET/POST/PUT/DELETE on /resource and /resource/:id
+        \\- Build with: zig build run
         \\
     ;
     const context_path = try std.fmt.allocPrint(allocator, "{s}/context.md", .{ai_prompts_dir});
@@ -789,15 +772,15 @@ fn generateMainZig(allocator: std.mem.Allocator, project_name: []const u8) ![]co
     _ = project_name;
     return try allocator.dupe(u8,
         \\const std = @import("std");
+        \\const zigmodu = @import("zigmodu");
         \\
         \\pub fn main(init: std.process.Init) !void {
         \\    const allocator = init.gpa;
-        \\    _ = allocator;
         \\
+        \\    std.log.info("Application '{s}' started!", .{project_name});
         \\
-        \\    std.log.info("Application started!", .{});
-        \\
-        \\    // TODO: Add your modules here
+        \\    // TODO: Add your modules via `zmodu module <name>`
+        \\    // Then wire them in: var app = try zigmodu.builder(allocator, init.io).build(.{...});
         \\}
         \\
     );
@@ -1312,25 +1295,11 @@ fn generateModuleModel(allocator: std.mem.Allocator, module_name: []const u8, ta
                 try buf.print(allocator, "    {s}: {s},\n", .{ col.name, base });
             }
         }
-        try buf.appendSlice(allocator, "\n    pub fn jsonStringify(self: @This(), jws: anytype) !void {\n");
-        try buf.appendSlice(allocator, "        try jws.beginObject();\n");
-        for (table.columns) |col| {
-            if (col.col_type == .unknown and col.name.len == 0) continue;
-            try buf.print(allocator, "        try jws.objectField(\"{s}\");\n", .{col.name});
-            if (col.nullable) {
-                try buf.print(allocator, "        if (self.{s}) |v| try jws.write(v) else try jws.write(null);\n", .{col.name});
-            } else {
-                try buf.print(allocator, "        try jws.write(self.{s});\n", .{col.name});
-            }
-        }
-        try buf.appendSlice(allocator, "        try jws.endObject();\n");
-        try buf.appendSlice(allocator, "    }\n");
         try buf.appendSlice(allocator, "};\n\n");
     }
 
     return buf.toOwnedSlice(allocator);
 }
-
 fn generateModulePersistence(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -1404,7 +1373,7 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
     return buf.toOwnedSlice(allocator);
 }
 
-fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, style: CodeStyle) ![]const u8 {
+fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
@@ -1419,179 +1388,67 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         defer allocator.free(model_name);
         const snake_name = try toSnakeCase(allocator, table.name);
         defer allocator.free(snake_name);
-        const list_fn = try std.fmt.allocPrint(allocator, "list{s}s", .{model_name});
-        defer allocator.free(list_fn);
-        const get_fn = try std.fmt.allocPrint(allocator, "get{s}", .{model_name});
-        defer allocator.free(get_fn);
-        const create_fn = try std.fmt.allocPrint(allocator, "create{s}", .{model_name});
-        defer allocator.free(create_fn);
-        const update_fn = try std.fmt.allocPrint(allocator, "update{s}", .{model_name});
-        defer allocator.free(update_fn);
-        const delete_fn = try std.fmt.allocPrint(allocator, "delete{s}", .{model_name});
-        defer allocator.free(delete_fn);
 
-        if (style == .java) {
-            // Route base = table name minus "system_" prefix, with _ → - for kebab-case URLs
-            const route_base = blk: {
-                const stripped = if (std.mem.startsWith(u8, snake_name, "system_")) snake_name["system_".len..] else snake_name;
-                // Replace _ with - for URL-friendly kebab-case
-                var kebab = try allocator.alloc(u8, stripped.len);
-                for (stripped, 0..) |c, idx| { kebab[idx] = if (c == '_') '-' else c; }
-                break :blk kebab;
-            };
-            try buf.print(allocator, "        try group.get(\"/system/{s}/page\", {s}, @ptrCast(@alignCast(self)));\n", .{ route_base, list_fn });
-            try buf.print(allocator, "        try group.get(\"/system/{s}/get\", {s}, @ptrCast(@alignCast(self)));\n", .{ route_base, get_fn });
-            try buf.print(allocator, "        try group.post(\"/system/{s}/create\", {s}, @ptrCast(@alignCast(self)));\n", .{ route_base, create_fn });
-            try buf.print(allocator, "        try group.put(\"/system/{s}/update\", {s}, @ptrCast(@alignCast(self)));\n", .{ route_base, update_fn });
-            try buf.print(allocator, "        try group.delete(\"/system/{s}/delete\", {s}, @ptrCast(@alignCast(self)));\n", .{ route_base, delete_fn });
-        } else {
-            try buf.print(allocator, "        try group.get(\"/{s}s\", {s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, list_fn });
-            try buf.print(allocator, "        try group.get(\"/{s}s/:id\", {s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, get_fn });
-            try buf.print(allocator, "        try group.post(\"/{s}s\", {s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, create_fn });
-            try buf.print(allocator, "        try group.put(\"/{s}s/:id\", {s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, update_fn });
-            try buf.print(allocator, "        try group.delete(\"/{s}s/:id\", {s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, delete_fn });
-        }
+        try buf.print(allocator, "        try group.get(\"/{s}s\", list{s}s, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}s/:id\", get{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
+        try buf.print(allocator, "        try group.post(\"/{s}s\", create{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
+        try buf.print(allocator, "        try group.put(\"/{s}s/:id\", update{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
+        try buf.print(allocator, "        try group.delete(\"/{s}s/:id\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
     }
     try buf.appendSlice(allocator, "    }\n\n");
 
     for (tables) |table| {
         const model_name = try toPascalCase(allocator, table.name);
         defer allocator.free(model_name);
-        const list_fn = try std.fmt.allocPrint(allocator, "list{s}s", .{model_name});
-        defer allocator.free(list_fn);
-        const get_fn = try std.fmt.allocPrint(allocator, "get{s}", .{model_name});
-        defer allocator.free(get_fn);
-        const create_fn = try std.fmt.allocPrint(allocator, "create{s}", .{model_name});
-        defer allocator.free(create_fn);
-        const update_fn = try std.fmt.allocPrint(allocator, "update{s}", .{model_name});
-        defer allocator.free(update_fn);
-        const delete_fn = try std.fmt.allocPrint(allocator, "delete{s}", .{model_name});
-        defer allocator.free(delete_fn);
 
-        if (style == .java) {
-            // -- Java-style list handler (pageNo/pageSize → page, sendPageResult)
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{list_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const pageNo = std.fmt.parseInt(usize, ctx.query.get(\"pageNo\") orelse \"1\", 10) catch 1;\n");
-            try buf.appendSlice(allocator, "        const pageSize = std.fmt.parseInt(usize, ctx.query.get(\"pageSize\") orelse \"10\", 10) catch 10;\n");
-            try buf.print(allocator, "        const result = try self.service.{s}(if (pageNo > 0) pageNo - 1 else 0, pageSize);\n", .{list_fn});
-            try buf.appendSlice(allocator, "        var itemsBuf: std.ArrayListUnmanaged(u8) = .{ .items = &.{}, .capacity = 0 };\n");
-            try buf.appendSlice(allocator, "        try itemsBuf.appendSlice(ctx.allocator, \"[\");\n");
-            try buf.appendSlice(allocator, "        for (result.items, 0..) |item, i| {\n");
-            try buf.appendSlice(allocator, "            if (i > 0) try itemsBuf.appendSlice(ctx.allocator, \",\");\n");
-            try buf.appendSlice(allocator, "            try itemsBuf.appendSlice(ctx.allocator, try std.fmt.allocPrint(ctx.allocator, \"{any}\", .{std.json.fmt(item, .{})}));\n");
-            try buf.appendSlice(allocator, "        }\n");
-            try buf.appendSlice(allocator, "        try itemsBuf.appendSlice(ctx.allocator, \"]\");\n");
-            try buf.appendSlice(allocator, "        try ctx.sendPageResult(itemsBuf.items, result.total);\n");
-            try buf.appendSlice(allocator, "    }\n\n");
+        // list
+        try buf.print(allocator, "    fn list{s}s(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
+        try buf.appendSlice(allocator, "        const page = std.fmt.parseInt(usize, ctx.query.get(\"page\") orelse \"0\", 10) catch 0;\n");
+        try buf.appendSlice(allocator, "        const size = std.fmt.parseInt(usize, ctx.query.get(\"size\") orelse \"10\", 10) catch 10;\n");
+        try buf.print(allocator, "        const result = try s.service.list{s}s(page, size);\n", .{model_name});
+        try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
+        try buf.appendSlice(allocator, "    }\n\n");
 
-            // Java-style get handler (query param id)
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{get_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.query.get(\"id\") orelse \"\", 10) catch 0;\n");
-            try buf.print(allocator, "        if (try self.service.{s}(id)) |entity| {{\n", .{get_fn});
-            try buf.appendSlice(allocator, "            try ctx.sendSuccess(try std.fmt.allocPrint(ctx.allocator, \"{any}\", .{std.json.fmt(entity, .{})}));\n");
-            try buf.appendSlice(allocator, "        } else { try ctx.sendFail(404, \"Not found\"); }\n");
-            try buf.appendSlice(allocator, "    }\n\n");
+        // get
+        try buf.print(allocator, "    fn get{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
+        try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
+        try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
+        try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
+        try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
+        try buf.appendSlice(allocator, "    }\n\n");
 
-            // Java-style create handler
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{create_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{ try ctx.sendFail(400, \"Invalid body\"); return; }};\n", .{model_name});
-            try buf.print(allocator, "        const created = try self.service.{s}(entity);\n", .{create_fn});
-            try buf.appendSlice(allocator, "        try ctx.sendSuccess(try std.fmt.allocPrint(ctx.allocator, \"{\\\"id\\\":{d}}\", .{created.id}));\n");
-            try buf.appendSlice(allocator, "    }\n\n");
+        // create
+        try buf.print(allocator, "    fn create{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
+        try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch |_| {{\n", .{model_name});
+        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
+        try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
+        try buf.appendSlice(allocator, "    }\n\n");
 
-            // Java-style update handler
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{update_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{ try ctx.sendFail(400, \"Invalid body\"); return; }};\n", .{model_name});
-            try buf.print(allocator, "        try self.service.{s}(entity);\n", .{update_fn});
-            try buf.appendSlice(allocator, "        try ctx.sendSuccess(\"true\");\n");
-            try buf.appendSlice(allocator, "    }\n\n");
+        // update
+        try buf.print(allocator, "    fn update{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
+        try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch |_| {{\n", .{model_name});
+        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
+        try buf.appendSlice(allocator, "        try ctx.json(200, \"{\\\"ok\\\":true}\");\n");
+        try buf.appendSlice(allocator, "    }\n\n");
 
-            // Java-style delete handler
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{delete_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.query.get(\"id\") orelse \"\", 10) catch 0;\n");
-            try buf.print(allocator, "        try self.service.{s}(id);\n", .{delete_fn});
-            try buf.appendSlice(allocator, "        try ctx.sendSuccess(\"true\");\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-        } else {
-            // Default-style handlers (unchanged)
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{list_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const page_str = ctx.query.get(\"page\") orelse \"0\";\n");
-            try buf.appendSlice(allocator, "        const size_str = ctx.query.get(\"size\") orelse \"10\";\n");
-            try buf.appendSlice(allocator, "        const page = std.fmt.parseInt(usize, page_str, 10) catch {\n");
-            try buf.print(allocator, "            std.log.warn(\"[{s}] list: invalid page\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid page\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.appendSlice(allocator, "        const size = std.fmt.parseInt(usize, size_str, 10) catch {\n");
-            try buf.print(allocator, "            std.log.warn(\"[{s}] list: invalid size\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid size\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.print(allocator, "        const result = try self.service.{s}(page, size);\n", .{list_fn});
-            try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{get_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const id_str = ctx.params.get(\"id\") orelse {\n");
-            try buf.print(allocator, "            std.log.warn(\"[{s}] get: missing id\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"missing id\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, id_str, 10) catch {\n");
-            try buf.print(allocator, "            std.log.warn(\"[{s}] get: invalid id\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid id\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.print(allocator, "        const entity = try self.service.{s}(id);\n", .{get_fn});
-            try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, entity);\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{create_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-            try buf.print(allocator, "            std.log.warn(\"[{s}] create: invalid body\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid body\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.print(allocator, "        const created = try self.service.{s}(entity);\n", .{create_fn});
-            try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{update_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-            try buf.print(allocator, "            std.log.warn(\"[{s}] update: invalid body\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid body\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.print(allocator, "        try self.service.{s}(entity);\n", .{update_fn});
-            try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, entity);\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-
-            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{delete_fn});
-            try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
-            try buf.appendSlice(allocator, "        const id_str = ctx.params.get(\"id\") orelse {\n");
-            try buf.print(allocator, "            std.log.warn(\"[{s}] delete: missing id\", .{{}});\n", .{module_name});
-            try buf.appendSlice(allocator, "            try ctx.sendErrorResponse(400, @intFromEnum(zigmodu.HttpCode.BadRequest), \"invalid id\");\n");
-            try buf.appendSlice(allocator, "            return;\n");
-            try buf.appendSlice(allocator, "        };\n");
-            try buf.print(allocator, "        try self.service.{s}(id);\n", .{delete_fn});
-            try buf.appendSlice(allocator, "        try ctx.json(204, \"\");\n");
-            try buf.appendSlice(allocator, "    }\n\n");
-        }
+        // delete
+        try buf.print(allocator, "    fn delete{s}(ctx: *http.http_server.Context) !void {{\n", .{model_name});
+        try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
+        try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
+        try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
+        try buf.appendSlice(allocator, "        try ctx.json(204, \"\");\n");
+        try buf.appendSlice(allocator, "    }\n\n");
     }
 
     try buf.appendSlice(allocator, orm_tpl.sqlx_api_footer);
     return buf.toOwnedSlice(allocator);
 }
-
 fn generateModuleZig(allocator: std.mem.Allocator, module_name: []const u8, dependencies: []const u8) ![]const u8 {
     const pascal = try toPascalCase(allocator, module_name);
     defer allocator.free(pascal);
@@ -1621,101 +1478,6 @@ fn replaceAllStr(allocator: std.mem.Allocator, haystack: []const u8, needle: []c
 
 /// Generate AI context index file (_ai.zig) for a module.
 /// Provides machine-readable metadata: dependencies, tables, API surface, extension points.
-fn generateAiContext(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, dependencies: []const u8) ![]const u8 {
-    const pascal_mod = try toPascalCase(allocator, module_name);
-    defer allocator.free(pascal_mod);
-
-    var buf: std.ArrayList(u8) = .empty;
-
-    try buf.appendSlice(allocator, "// ═══════════════════════════════════════════════════════════\n");
-    try buf.appendSlice(allocator, "// AI Context: ");
-    try buf.appendSlice(allocator, module_name);
-    try buf.appendSlice(allocator, " module\n");
-    try buf.appendSlice(allocator, "// ═══════════════════════════════════════════════════════════\n");
-    try buf.appendSlice(allocator, "// Dependencies: ");
-    try buf.appendSlice(allocator, dependencies);
-    try buf.appendSlice(allocator, "\n");
-    try buf.appendSlice(allocator, "// Tables:\n");
-    for (tables) |table| {
-        try buf.print(allocator, "//   {s} — ", .{table.name});
-        var col_count: usize = 0;
-        for (table.columns) |col| {
-            if (col.col_type == .unknown and col.name.len == 0) continue;
-            col_count += 1;
-        }
-        try buf.print(allocator, "{d} columns", .{col_count});
-        if (table.foreign_keys.len > 0) {
-            try buf.appendSlice(allocator, ", FK: ");
-            for (table.foreign_keys, 0..) |fk, idx| {
-                if (idx > 0) try buf.appendSlice(allocator, ", ");
-                try buf.print(allocator, "{s}→{s}", .{ fk.column_name, fk.ref_table });
-            }
-        }
-        try buf.appendSlice(allocator, "\n");
-    }
-    try buf.appendSlice(allocator, "//\n");
-    try buf.appendSlice(allocator, "// Public API: service.zig\n");
-    for (tables) |table| {
-        const model_name = try toPascalCase(allocator, table.name);
-        defer allocator.free(model_name);
-        try buf.print(allocator, "//   list{s}s / get{s} / create{s} / update{s} / delete{s}\n", .{ model_name, model_name, model_name, model_name, model_name });
-    }
-    try buf.appendSlice(allocator, "//\n");
-    try buf.appendSlice(allocator, "// Extension points:\n");
-    try buf.appendSlice(allocator, "//   service_ext.zig — custom business logic (survives regeneration)\n");
-    try buf.appendSlice(allocator, "//   api_ext.zig — custom HTTP endpoints (survives regeneration)\n");
-    try buf.appendSlice(allocator, "//\n");
-    try buf.appendSlice(allocator, "// File map:\n");
-    try buf.appendSlice(allocator, "//   module.zig — declaration layer (module contract)\n");
-    try buf.appendSlice(allocator, "//   model.zig — data structures + jsonStringify\n");
-    try buf.appendSlice(allocator, "//   persistence.zig — ORM repositories\n");
-    try buf.appendSlice(allocator, "//   service.zig — CRUD delegation + event hooks\n");
-    try buf.appendSlice(allocator, "//   api.zig — HTTP routes + JSON handlers\n");
-    try buf.appendSlice(allocator, "//   root.zig — barrel exports\n");
-    try buf.appendSlice(allocator, "//   test.zig — smoke tests\n");
-    try buf.appendSlice(allocator, "// ═══════════════════════════════════════════════════════════\n");
-
-    return buf.toOwnedSlice(allocator);
-}
-
-fn generateModuleEvents(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef) ![]const u8 {
-    var buf: std.ArrayList(u8) = std.ArrayList(u8).empty;
-    defer buf.deinit(allocator);
-
-    const pascal_mod = try toPascalCase(allocator, module_name);
-    defer allocator.free(pascal_mod);
-
-    try buf.appendSlice(allocator, "const std = @import(\"std\");\n");
-    try buf.appendSlice(allocator, "const zigmodu = @import(\"zigmodu\");\n\n");
-
-    // Event type definitions
-    for (tables) |table| {
-        const model_name = try toPascalCase(allocator, table.name);
-        defer allocator.free(model_name);
-        try buf.print(allocator, "pub const {s}Created = struct {{\n", .{model_name});
-        try buf.print(allocator, "    {s}_id: i64,\n", .{table.name});
-        try buf.appendSlice(allocator, "    timestamp_ms: i64,\n");
-        try buf.appendSlice(allocator, "};\n\n");
-    }
-
-    // EventBus instance
-    try buf.print(allocator, "var bus: ?zigmodu.TypedEventBus({s}Event) = null;\n\n", .{pascal_mod});
-    try buf.print(allocator, "pub const {s}Event = union(enum) {{\n", .{pascal_mod});
-    for (tables) |table| {
-        const model_name = try toPascalCase(allocator, table.name);
-        defer allocator.free(model_name);
-        try buf.print(allocator, "    {s}Created: {s}Created,\n", .{ model_name, model_name });
-    }
-    try buf.appendSlice(allocator, "};\n\n");
-    try buf.print(allocator, "pub fn init(b: *zigmodu.TypedEventBus({s}Event)) void {{\n", .{pascal_mod});
-    try buf.appendSlice(allocator, "    bus = b;\n");
-    try buf.appendSlice(allocator, "}\n\n");
-    try buf.print(allocator, "pub fn publish(event: {s}Event) void {{\n", .{pascal_mod});
-    try buf.appendSlice(allocator, "    if (bus) |b| b.publish(event);\n");
-    try buf.appendSlice(allocator, "}}\n");
-
-    return buf.toOwnedSlice(allocator);
-}
 
 fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8, module_name: []const u8, tables: []const TableDef, opts: GenOptions) !void {
     const module_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ out_dir, module_name });
@@ -1741,7 +1503,7 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
         defer allocator.free(service_path);
         try writeFileGen(io, service_path, service_code, opts);
 
-        const api_code = try generateModuleApi(allocator, module_name, tables, opts.style);
+        const api_code = try generateModuleApi(allocator, module_name, tables);
         defer allocator.free(api_code);
         const api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{module_dir});
         defer allocator.free(api_path);
@@ -1750,15 +1512,8 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
         const dependencies_str = try inferModuleDependencies(allocator, tables, module_name, 0);
         defer allocator.free(dependencies_str);
 
-        var module_code = try generateModuleZig(allocator, module_name, dependencies_str);
+        const module_code = try generateModuleZig(allocator, module_name, dependencies_str);
         defer allocator.free(module_code);
-        if (opts.enable_events) {
-            const code_with_init = try replaceAllStr(allocator, module_code, "// <<INIT_EVENTS>>", "try events.init(&event_bus);");
-            allocator.free(module_code);
-            const code_full = try replaceAllStr(allocator, code_with_init, "// <<EVENTS_SECTION>>", "const events = @import(\"events.zig\");\nconst event_bus = events.bus orelse undefined;");
-            allocator.free(code_with_init);
-            module_code = code_full;
-        }
         const module_path = try std.fmt.allocPrint(allocator, "{s}/module.zig", .{module_dir});
         defer allocator.free(module_path);
         try writeFileGen(io, module_path, module_code, opts);
@@ -1770,37 +1525,6 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
         const root_path = try std.fmt.allocPrint(allocator, "{s}/root.zig", .{module_dir});
         defer allocator.free(root_path);
         try writeFileGen(io, root_path, root_code, opts);
-
-        // Generate test.zig
-        const test_code = try orm_tpl.expandOrm(allocator, orm_tpl.sqlx_test_zig, module_name, pascal_mod);
-        defer allocator.free(test_code);
-        const test_path = try std.fmt.allocPrint(allocator, "{s}/test.zig", .{module_dir});
-        defer allocator.free(test_path);
-        try writeFileGen(io, test_path, test_code, opts);
-
-        // Generate _ai.zig — AI context index
-        const ai_ctx = try generateAiContext(allocator, module_name, tables, dependencies_str);
-        defer allocator.free(ai_ctx);
-        const ai_path = try std.fmt.allocPrint(allocator, "{s}/_ai.zig", .{module_dir});
-        defer allocator.free(ai_path);
-        try writeFileGen(io, ai_path, ai_ctx, opts);
-
-        // Generate _arch_test.zig — architecture verification tests
-        const arch_tpl = try orm_tpl.expandOrm(allocator, orm_tpl.sqlx_arch_test_zig, module_name, pascal_mod);
-        defer allocator.free(arch_tpl);
-        const arch_with_deps = try replaceAllStr(allocator, arch_tpl, "<<DEPS>>", dependencies_str);
-        defer allocator.free(arch_with_deps);
-        const arch_path = try std.fmt.allocPrint(allocator, "{s}/_arch_test.zig", .{module_dir});
-        defer allocator.free(arch_path);
-        try writeFileGen(io, arch_path, arch_with_deps, opts);
-    }
-
-    if (opts.enable_events) {
-        const events_code = try generateModuleEvents(allocator, module_name, tables);
-        defer allocator.free(events_code);
-        const events_path = try std.fmt.allocPrint(allocator, "{s}/events.zig", .{module_dir});
-        defer allocator.free(events_path);
-        try writeFileGen(io, events_path, events_code, opts);
     }
 
     std.log.info("Generated module '{s}' at {s}/ with {d} table(s)", .{ module_name, module_dir, tables.len });
@@ -2263,27 +1987,29 @@ fn cmdHealth(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         \\const std = @import("std");
         \\const zigmodu = @import("zigmodu");
         \\
-        \\const HealthEndpoint = zigmodu.HealthEndpoint;
+        \\const http = zigmodu.http;
         \\
-        \\pub fn registerHealthChecks(endpoint: *HealthEndpoint) !void {
-        \\    // Liveness: always UP while process is alive
-        \\    try endpoint.registerCheck("liveness", "Process liveness", HealthEndpoint.alwaysUp);
-        \\
-        \\    // Add your custom health checks here. Examples:
-        \\    //
-        \\    // Database check:
-        \\    // try endpoint.registerCheckWithContext("database", "Database connectivity",
-        \\    //     HealthEndpoint.databaseCheck, @ptrCast(&db_pool));
-        \\    //
-        \\    // Redis check:
-        \\    // try endpoint.registerCheckWithContext("redis", "Redis connectivity",
-        \\    //     HealthEndpoint.redisCheck, @ptrCast(&redis_client));
-        \\    //
-        \\    // Disk check:
-        \\    // const min_space: u64 = 100 * 1024 * 1024; // 100MB
-        \\    // try endpoint.registerCheckWithContext("disk", "Disk space check",
-        \\    //     HealthEndpoint.diskSpaceCheck, @ptrCast(&min_space));
+        \\pub fn healthCheck(ctx: *http.http_server.Context) !void {
+        \\    try ctx.json(200, "{\"status\":\"UP\"}");
         \\}
+        \\
+        \\// Add richer health checks by extending this module:
+        \\//
+        \\// Database check:
+        \\// pub fn dbHealthCheck(db_client: anytype) http.http_server.HandlerFn {
+        \\//     const CheckCtx = struct { db: @TypeOf(db_client) };
+        \\//     var ctx = CheckCtx{ .db = db_client };
+        \\//     return struct {
+        \\//         fn check(ctx_: *http.http_server.Context) !void {
+        \\//             const self: *CheckCtx = @ptrCast(@alignCast(ctx_.user_data));
+        \\//             _ = self.db.ping() catch {
+        \\//                 try ctx_.json(503, "{\"status\":\"DOWN\",\"reason\":\"db\"}");
+        \\//                 return;
+        \\//             };
+        \\//             try ctx_.json(200, "{\"status\":\"UP\"}");
+        \\//         }
+        \\//     }.check;
+        \\// }
         \\
     ;
 
@@ -2477,12 +2203,14 @@ fn cmdBigdemo(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
         "--with-resilience",
         "--with-cluster",
         "--with-marketing",
+        "--with-metrics",
+        "--with-auth",
         "--force",
     };
 
-    std.log.info("🚀 zmodu bigdemo — regenerating shopdemo (152 tables, 42 modules)...", .{});
+    std.log.info("zmodu bigdemo — regenerating shopdemo (152 tables, 42 modules)...", .{});
     try cmdScaffold(io, allocator, &scaffold_args);
-    std.log.info("✅ bigdemo complete — shopdemo/ ready with 484 .zig files", .{});
+    std.log.info("bigdemo complete — shopdemo/ ready", .{});
 }
 
 // ── scaffold: one-shot SQL → full project ────────────────────────
@@ -2497,6 +2225,8 @@ const ScaffoldOpts = struct {
     with_resilience: bool = false,
     with_cluster: bool = false,
     with_marketing: bool = false,
+    with_metrics: bool = false,
+    with_auth: bool = false,
 };
 
 fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !ScaffoldOpts {
@@ -2511,6 +2241,8 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var with_resilience: bool = false;
     var with_cluster: bool = false;
     var with_marketing: bool = false;
+    var with_metrics: bool = false;
+    var with_auth: bool = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2538,6 +2270,10 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             with_cluster = true;
         } else if (std.mem.eql(u8, args[i], "--with-marketing")) {
             with_marketing = true;
+        } else if (std.mem.eql(u8, args[i], "--with-metrics")) {
+            with_metrics = true;
+        } else if (std.mem.eql(u8, args[i], "--with-auth")) {
+            with_auth = true;
         } else {
             std.log.err("Unknown scaffold option: {s}", .{args[i]});
             return error.CliUsage;
@@ -2562,6 +2298,8 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .with_resilience = with_resilience,
         .with_cluster = with_cluster,
         .with_marketing = with_marketing,
+        .with_metrics = with_metrics,
+        .with_auth = with_auth,
     };
 }
 
@@ -2662,9 +2400,9 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\
             \\pub const {s}ServiceExt = struct {{
             \\    svc: *{s}_svc.{s}Service,
-            \\    backend: zigmodu.SqlxBackend,
+            \\    backend: zigmodu.data.SqlxBackend,
             \\
-            \\    pub fn init(svc: *{s}_svc.{s}Service, backend: zigmodu.SqlxBackend) {s}ServiceExt {{
+            \\    pub fn init(svc: *{s}_svc.{s}Service, backend: zigmodu.data.SqlxBackend) {s}ServiceExt {{
             \\        return .{{ .svc = svc, .backend = backend }};
             \\    }}
             \\
@@ -2692,7 +2430,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        return .{{ .ext = ext }};
             \\    }}
             \\
-            \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http_server.RouteGroup) !void {{
+            \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http.http_server.RouteGroup) !void {{
             \\        _ = self;
             \\        // Add custom routes:
             \\        // try group.get("/{s}/custom", myHandler, @ptrCast(@alignCast(self)));
@@ -2934,59 +2672,38 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         }
     }
 
-    try buf.appendSlice(allocator, "\nconst business = @import(\"business/root.zig\");\n\n");
+    try buf.appendSlice(allocator, "\n");
 
     try buf.appendSlice(allocator,
-        \\fn envOr(map: *std.process.Environ.Map, allocator: std.mem.Allocator, key: []const u8, default: []const u8) []const u8 {
-        \\    if (map.get(key)) |val| return allocator.dupe(u8, val) catch default;
-        \\    return default;
-        \\}
-        \\
-        \\fn envU16Or(map: *std.process.Environ.Map, key: []const u8, default: u16) u16 {
-        \\    const val = map.get(key) orelse return default;
-        \\    return std.fmt.parseInt(u16, val, 10) catch default;
-        \\}
-        \\
-        \\fn envF64Or(map: *std.process.Environ.Map, key: []const u8, default: f64) f64 {
-        \\    const val = map.get(key) orelse return default;
-        \\    return std.fmt.parseFloat(f64, val) catch default;
-        \\}
-        \\
-        \\fn envBoolOr(map: *std.process.Environ.Map, key: []const u8, default: bool) bool {
-        \\    const val = map.get(key) orelse return default;
-        \\    return std.mem.eql(u8, val, "1") or std.mem.eql(u8, val, "true");
-        \\}
-        \\
         \\pub fn main(init: std.process.Init) !void {
         \\    const allocator = init.gpa;
         \\    const env = init.environ_map;
         \\
-        \\    const db_host = envOr(env, allocator, "DB_HOST", "127.0.0.1");
-        \\    const db_port = envU16Or(env, "DB_PORT", 3306);
-        \\    const db_user = envOr(env, allocator, "DB_USER", "root");
-        \\    const db_pass = envOr(env, allocator, "DB_PASS", "");
-        \\    const db_name = envOr(env, allocator, "DB_NAME", "heysen");
-        \\    const db_max_open = envU16Or(env, "DB_MAX_OPEN", 10);
-        \\    const db_max_idle = envU16Or(env, "DB_MAX_IDLE", 5);
-        \\    const http_port = envU16Or(env, "HTTP_PORT", 8080);
+        \\    // -- Config --
+        \\    const db_host = env.get("DB_HOST") orelse "127.0.0.1";
+        \\    const db_port = env.get("DB_PORT") orelse "3306";
+        \\    const db_user = env.get("DB_USER") orelse "root";
+        \\    const db_pass = env.get("DB_PASS") orelse "";
+        \\    const db_name = env.get("DB_NAME") orelse "heysen";
+        \\    const http_port = if (env.get("HTTP_PORT")) |p| std.fmt.parseInt(u16, p, 10) catch 8080 else 8080;
         \\
-        \\    const db_cfg = zigmodu.sqlx.Config{
-        \\        .driver = .mysql, .host = db_host, .port = @intCast(db_port),
+        \\    const db_cfg = zigmodu.data.sqlx.Config{
+        \\        .driver = .mysql, .host = db_host, .port = std.fmt.parseInt(u16, db_port, 10) catch 3306,
         \\        .database = db_name, .username = db_user, .password = db_pass,
-        \\        .max_open_conns = @intCast(db_max_open), .max_idle_conns = @intCast(db_max_idle),
+        \\        .max_open_conns = 10, .max_idle_conns = 5,
         \\    };
         \\
-        \\    var db_client = zigmodu.sqlx.Client.init(allocator, init.io, db_cfg);
+        \\    var db_client = zigmodu.data.sqlx.Client.init(allocator, init.io, db_cfg);
         \\    defer db_client.deinit();
         \\    try db_client.connect();
-        \\    std.log.info("DB: {s}@{s}:{d}/{s} (pool={d}/{d})", .{ db_user, db_host, db_port, db_name, db_max_open, db_max_idle });
+        \\    std.log.info("DB connected: {s}@{s}:{s}/{s}", .{ db_user, db_host, db_port, db_name });
         \\
-        \\    const backend = zigmodu.SqlxBackend{ .allocator = allocator, .client = &db_client };
+        \\    const backend = zigmodu.data.SqlxBackend{ .allocator = allocator, .client = &db_client };
         \\
         \\
     );
 
-    // Persistence init (with collision-aware naming)
+    // Persistence/Service/API init
     try buf.appendSlice(allocator, "    // -- Persistence --\n");
     for (module_names) |name| {
         const pascal = try toPascalCase(allocator, name);
@@ -2997,40 +2714,40 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             try buf.print(allocator, "    var {s}_p = {s}.persistence.{s}Persistence.init(backend);\n", .{ name, name, pascal });
         }
     }
-
-    // Service init
     try buf.appendSlice(allocator, "\n    // -- Service --\n");
     for (module_names) |name| {
         const pascal = try toPascalCase(allocator, name);
         defer allocator.free(pascal);
-        if (std.mem.eql(u8, name, "app") or std.mem.eql(u8, name, "system")) {
-            try buf.print(allocator, "    var {s}_s = {s}_mod.service.{s}Service.init(&{s}_p);\n", .{ name, name, pascal, name });
-        } else {
-            try buf.print(allocator, "    var {s}_s = {s}.service.{s}Service.init(&{s}_p);\n", .{ name, name, pascal, name });
-        }
+        try buf.print(allocator, "    var {s}_svc = {s}.service.{s}Service.init(&{s}_p);\n", .{ name, name, pascal, name });
     }
-
-    // API init
     try buf.appendSlice(allocator, "\n    // -- API --\n");
     for (module_names) |name| {
         const pascal = try toPascalCase(allocator, name);
         defer allocator.free(pascal);
-        if (std.mem.eql(u8, name, "app") or std.mem.eql(u8, name, "system")) {
-            try buf.print(allocator, "    var {s}_api = {s}_mod.api.{s}Api.init(&{s}_s);\n", .{ name, name, pascal, name });
-        } else {
-            try buf.print(allocator, "    var {s}_api = {s}.api.{s}Api.init(&{s}_s);\n", .{ name, name, pascal, name });
-        }
+        try buf.print(allocator, "    var {s}_api = {s}.api.{s}Api.init(&{s}_svc);\n", .{ name, name, pascal, name });
     }
 
-    // HTTP server + health check + route registration
+    // Auth middleware
+    if (sopts.with_auth) {
+        try buf.appendSlice(allocator,
+            \\    // -- Auth --
+            \\    const jwt_secret = env.get("JWT_SECRET") orelse "changeme-in-production";
+            \\    _ = jwt_secret;
+            \\    // TODO: wire zigmodu.security.auth with JWT secret
+            \\    // server.addMiddleware(.{ .func = zigmodu.security.auth.jwtAuth(jwt_secret) });
+            \\
+            \\
+        );
+    }
+
+    // HTTP server + route registration
     try buf.appendSlice(allocator,
         \\
         \\    // -- HTTP Server --
-        \\    var server = zigmodu.http_server.Server.init(init.io, allocator, http_port);
+        \\    var server = zigmodu.http.http_server.Server.init(init.io, allocator, http_port);
         \\    defer server.deinit();
+        \\    server.withGracefulDrain(zigmodu.getInFlightCounter());
         \\    var root = server.group("/api");
-        \\
-        \\    // Health check
         \\    try root.get("/health", healthCheck, null);
         \\
         \\
@@ -3040,40 +2757,26 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         try buf.print(allocator, "    try {s}_api.registerRoutes(&root);\n", .{name});
     }
 
-    try buf.appendSlice(allocator,
-        \\
-        \\    // Custom business endpoints (add your api_ext routes here):
-        \\    // const my_ext = @import("modules/my_module/api_ext.zig");
-        \\    // var my_api = my_ext.MyApiExt.init(&my_ext_svc);
-        \\    // try my_api.registerRoutes(&root);
-        \\
-        \\
-    );
-
-    // ── Capability: Events (Stage B) ──
+    // ── Capability flags ──
     if (sopts.with_events) {
-        try buf.appendSlice(allocator, "\n    // -- EventBus (Stage B) --\n    const event_bus = zigmodu.TypedEventBus(struct { id: i64, name: []const u8 }).init(allocator);\n    defer event_bus.deinit();\n");
+        try buf.appendSlice(allocator, "\n    // -- EventBus --\n    var event_bus = zigmodu.EventBus.init(allocator);\n    defer event_bus.deinit();\n");
     }
 
-    // ── Capability: Resilience (Stage C) ──
     if (sopts.with_resilience) {
-        try buf.appendSlice(allocator, "\n    // -- Resilience (Stage C) --\n    var breaker = try zigmodu.CircuitBreaker.init(allocator, \"db\", .{ .failure_threshold = 5, .success_threshold = 2, .timeout_seconds = 30, .half_open_max_calls = 3 });\n    defer breaker.deinit();\n    var limiter = try zigmodu.RateLimiter.init(allocator, \"api\", 1000, 100);\n    defer limiter.deinit();\n");
+        try buf.appendSlice(allocator, "\n    // -- Resilience --\n    var breaker = try zigmodu.CircuitBreaker.init(allocator, \"db\", .{ .failure_threshold = 5, .success_threshold = 2, .timeout_seconds = 30, .half_open_max_calls = 3 });\n    defer breaker.deinit();\n    var limiter = try zigmodu.RateLimiter.init(allocator, \"api\", 1000, 100);\n    defer limiter.deinit();\n");
     }
 
-    // ── Capability: Cluster (Stage D) ──
     if (sopts.with_cluster) {
-        try buf.appendSlice(allocator, "\n    // -- Cluster (Stage D) --\n    const node_id = try std.fmt.allocPrint(allocator, \"node-{d}\", .{@as(u64, @intCast(std.time.milliTimestamp()))});\n    var dist_bus = try zigmodu.DistributedEventBus.init(allocator, init.io, node_id);\n    defer dist_bus.deinit();\n    try dist_bus.start(9091);\n");
+        try buf.appendSlice(allocator, "\n    // -- Cluster --\n    const node_id = try std.fmt.allocPrint(allocator, \"node-{d}\", .{@as(u64, @intCast(std.time.milliTimestamp()))});\n    var dist_bus = try zigmodu.DistributedEventBus.init(allocator, init.io, node_id);\n    defer dist_bus.deinit();\n    try dist_bus.start(9091);\n");
+    }
+    if (sopts.with_metrics) {
+        try buf.appendSlice(allocator, "\n    // -- Prometheus /metrics --\n    try zigmodu.observability.PrometheusMetrics.registerMetricsRoute(&server);\n");
     }
 
-    // Module count + lifecycle
-    var count_buf: [16]u8 = undefined;
-    const count_str = try std.fmt.bufPrint(&count_buf, "{d}", .{module_names.len});
-
-    try buf.appendSlice(allocator, "\n    std.log.info(\"");
-    try buf.appendSlice(allocator, count_str);
-    try buf.appendSlice(allocator, " modules + health check on :{d}\", .{ http_port });\n\n    // -- Lifecycle --\n    var app = try zigmodu.Application.init(\n        init.io, allocator, \"");
+    // Application lifecycle with builder pattern
+    try buf.appendSlice(allocator, "\n    // -- Lifecycle --\n    var app = try zigmodu.builder(allocator, init.io)\n        .withName(\"");
     try buf.appendSlice(allocator, project_name);
-    try buf.appendSlice(allocator, "\",\n        .{ ");
+    try buf.appendSlice(allocator, "\")\n        .withValidation(true)\n        .build(.{ ");
 
     for (module_names) |name| {
         if (std.mem.eql(u8, name, "app") or std.mem.eql(u8, name, "system")) {
@@ -3082,7 +2785,12 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             try buf.print(allocator, "{s}.module, ", .{name});
         }
     }
-    try buf.appendSlice(allocator, "},\n        .{},\n    );\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthCheck(ctx: *http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"ok\\\"}\");\n}\n");
+    try buf.appendSlice(allocator, "});\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthCheck(ctx: *zigmodu.http.http_server.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n");
+
+    // With DB: generate a richer health probe
+    if (sopts.with_resilience) {
+        try buf.appendSlice(allocator, "\nfn dbHealthCheck(backend: *zigmodu.data.SqlxBackend) http.http_server.HandlerFn {\n    const Ctx = struct { backend: *zigmodu.data.SqlxBackend };\n    var c = Ctx{ .backend = backend };\n    return struct {\n        fn check(ctx: *zigmodu.http.http_server.Context) !void {\n            const s: *Ctx = @ptrCast(@alignCast(ctx.user_data orelse unreachable));\n            if (s.backend.client.ping()) {\n                try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\",\\\"db\\\":\\\"connected\\\"}\");\n            } else |_| {\n                try ctx.json(503, \"{\\\"status\\\":\\\"DOWN\\\",\\\"db\\\":\\\"unreachable\\\"}\");\n            }\n        }\n    }.check;\n}\n");
+    }
 
     return buf.toOwnedSlice(allocator);
 }
@@ -3091,10 +2799,8 @@ fn generateScaffoldTestsZig(allocator: std.mem.Allocator, module_names: []const 
     _ = module_names;
     return allocator.dupe(u8,
         \\const std = @import("std");
-        \\const business = @import("business/root.zig");
         \\
-        \\test "suite" {
-        \\    _ = business;
+        \\test "placeholder" {
         \\    try std.testing.expect(true);
         \\}
         \\
@@ -3315,20 +3021,18 @@ test "toSnakeCase hyphen to underscore" {
 }
 
 test "commonTablePrefix finds shared prefix" {
-    const allocator = std.testing.allocator;
-    const names = &[_][]const u8{ "order_header", "order_line", "order_payment" };
-    const prefix = commonTablePrefix(names);
-    defer allocator.free(prefix);
-    try std.testing.expectEqualStrings("order", prefix);
+    const tables = &[_]TableDef{
+        .{ .name = "order_header", .columns = &.{}, .foreign_keys = &.{} },
+        .{ .name = "order_line", .columns = &.{}, .foreign_keys = &.{} },
+        .{ .name = "order_payment", .columns = &.{}, .foreign_keys = &.{} },
+    };
+    const prefix = commonTablePrefix(tables);
+    try std.testing.expectEqual(@as(usize, "order_".len), prefix);
 }
 
 test "inferModuleName from table list" {
     const allocator = std.testing.allocator;
-    const tables = &[_]TableDef{
-        .{ .name = "ad_category", .columns = &.{}, .indexes = &.{} },
-        .{ .name = "ad_banner", .columns = &.{}, .indexes = &.{} },
-    };
-    const name = try inferModuleName(allocator, tables);
+    const name = try inferModuleName(allocator, "ad_category", 0);
     defer allocator.free(name);
     try std.testing.expectEqualStrings("ad", name);
 }

@@ -1,4 +1,4 @@
-//! Embedded text templates under `tools/zmodu/src/templates/{orm, module}/`.
+//! Embedded text templates under `src/templates/{orm, module}/`.
 const std = @import("std");
 
 pub const sqlx_model_header = @embedFile("templates/orm/sqlx/model_header.zig.tpl");
@@ -10,10 +10,15 @@ pub const sqlx_api_header = @embedFile("templates/orm/sqlx/api_header.zig.tpl");
 pub const sqlx_api_footer = @embedFile("templates/orm/sqlx/api_footer.zig.tpl");
 pub const sqlx_module_zig = @embedFile("templates/orm/sqlx/module.zig.tpl");
 pub const sqlx_root_zig = @embedFile("templates/orm/sqlx/root.zig.tpl");
-pub const sqlx_test_zig = @embedFile("templates/orm/sqlx/test.zig.tpl");
 
-/// Architecture test template (per-module architecture verification).
-pub const sqlx_arch_test_zig = @embedFile("templates/orm/sqlx/arch_test.zig.tpl");
+/// `zmodu module <name>` — minimal `root.zig` next to `module.zig`.
+pub const module_minimal_root_zig = @embedFile("templates/module/root.zig.tpl");
+
+/// `zmodu api <name>` — standalone API template.
+pub const api_standalone_tpl = @embedFile("templates/api_standalone.zig.tpl");
+
+/// `zmodu event <name>` — event handler template.
+pub const event_tpl = @embedFile("templates/event.zig.tpl");
 
 /// Zent backend (`zmodu orm --backend zent`)
 pub const zent_schema_header = @embedFile("templates/orm/zent/schema_header.zig.tpl");
@@ -22,15 +27,6 @@ pub const zent_client_header = @embedFile("templates/orm/zent/client_header.zig.
 pub const zent_client_footer = @embedFile("templates/orm/zent/client_footer.zig.tpl");
 pub const zent_root_zig = @embedFile("templates/orm/zent/root.zig.tpl");
 pub const zent_module_zig = @embedFile("templates/orm/zent/module.zig.tpl");
-
-/// `zmodu module <name>` — minimal `root.zig` next to `module.zig`.
-pub const module_minimal_root_zig = @embedFile("templates/module/root.zig.tpl");
-
-/// `zmodu event <name>` — event handler template.
-pub const event_tpl = @embedFile("templates/event.zig.tpl");
-
-/// `zmodu api <name>` — standalone API template.
-pub const api_standalone_tpl = @embedFile("templates/api_standalone.zig.tpl");
 
 fn replaceAll(allocator: std.mem.Allocator, haystack: []const u8, needle: []const u8, replacement: []const u8) ![]const u8 {
     var out: std.ArrayList(u8) = .empty;

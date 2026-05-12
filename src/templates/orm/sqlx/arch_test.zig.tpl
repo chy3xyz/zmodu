@@ -5,43 +5,24 @@ const std = @import("std");
 const zigmodu = @import("zigmodu");
 
 test "<<MODULE_NAME>> - architecture: no self dependency" {
-    const allocator = std.testing.allocator;
-    var modules = zigmodu.ApplicationModules.init(allocator);
-    defer modules.deinit();
-
-    try modules.register(zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>));
-
-    var tester = zigmodu.ArchitectureTester.init(allocator, &modules);
-    defer tester.deinit();
-
-    try tester.ruleNoSelfDependency();
-    try std.testing.expectEqual(@as(usize, 0), tester.getViolationCountBySeverity(.err));
+    const info = zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>);
+    for (info.deps) |dep| {
+        if (std.mem.eql(u8, dep, info.name)) {
+            std.log.err("Module '{s}' depends on itself", .{info.name});
+            return error.SelfDependency;
+        }
+    }
 }
 
 test "<<MODULE_NAME>> - architecture: naming convention" {
-    const allocator = std.testing.allocator;
-    var modules = zigmodu.ApplicationModules.init(allocator);
-    defer modules.deinit();
-
-    try modules.register(zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>));
-
-    var tester = zigmodu.ArchitectureTester.init(allocator, &modules);
-    defer tester.deinit();
-
-    try tester.ruleModuleNamingConvention();
-    try std.testing.expectEqual(@as(usize, 0), tester.getViolationCountBySeverity(.err));
+    const info = zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>);
+    // Module names should be lowercase ASCII with optional underscores
+    for (info.name) |c| {
+        try std.testing.expect(std.ascii.isLower(c) or c == '_' or std.ascii.isDigit(c));
+    }
 }
 
 test "<<MODULE_NAME>> - architecture: dependency limit" {
-    const allocator = std.testing.allocator;
-    var modules = zigmodu.ApplicationModules.init(allocator);
-    defer modules.deinit();
-
-    try modules.register(zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>));
-
-    var tester = zigmodu.ArchitectureTester.init(allocator, &modules);
-    defer tester.deinit();
-
-    try tester.ruleLimitedDependencies(10);
-    try std.testing.expectEqual(@as(usize, 0), tester.getViolationCountBySeverity(.err));
+    const info = zigmodu.ModuleInfo.init("<<MODULE_NAME>>", "<<MODULE_NAME>> module", <<DEPS>>);
+    try std.testing.expect(info.deps.len <= 10);
 }

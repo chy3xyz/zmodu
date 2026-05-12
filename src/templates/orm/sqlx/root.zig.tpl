@@ -1,4 +1,4 @@
-//! Barrel re-exports for module `<<MODULE_NAME>>` (zigmodu modular layout).
+//! Barrel re-exports for module: <<MODULE_NAME>>
 
 pub const model = @import("model.zig");
 pub const persistence = @import("persistence.zig");
