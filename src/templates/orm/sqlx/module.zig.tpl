@@ -3,8 +3,9 @@
 //! Lifecycle: init() → service ready → deinit() on shutdown.
 
 const std = @import("std");
-const api = @import("zigmodu").api;
-const http = @import("zigmodu").http;
+const zigmodu = @import("zigmodu");
+const api = zigmodu.api;
+const http = zigmodu.http;
 
 pub const info = api.Module{
     .name = "<<MODULE_NAME>>",

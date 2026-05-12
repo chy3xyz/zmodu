@@ -2,7 +2,6 @@
 
 const std = @import("std");
 const zigmodu = @import("zigmodu");
-const EventBus = zigmodu.EventBus;
 const data = zigmodu.data;
 const model = @import("model.zig");
 const persistence = @import("persistence.zig");
@@ -14,13 +13,13 @@ pub const <<PASCAL_MODULE>>Event = union(enum) {
 
 pub const <<PASCAL_MODULE>>Service = struct {
     persistence: *persistence.<<PASCAL_MODULE>>Persistence,
-    event_bus: ?*EventBus = null,
+    event_bus: ?*zigmodu.EventBus(<<PASCAL_MODULE>>Event) = null,
 
     pub fn init(p: *persistence.<<PASCAL_MODULE>>Persistence) <<PASCAL_MODULE>>Service {
         return .{ .persistence = p };
     }
 
-    pub fn withEvents(self: *<<PASCAL_MODULE>>Service, bus: *EventBus) void {
+    pub fn withEvents(self: *<<PASCAL_MODULE>>Service, bus: *zigmodu.EventBus(<<PASCAL_MODULE>>Event)) void {
         self.event_bus = bus;
     }
 
