@@ -3224,3 +3224,43 @@ test "isSafeModuleDirName" {
     try std.testing.expect(!isSafeModuleDirName(""));
 }
 
+test "toPascalCase snake_case to PascalCase" {
+    const allocator = std.testing.allocator;
+    const result = try toPascalCase(allocator, "user_profile");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("UserProfile", result);
+}
+
+test "toCamelCase hyphenated to camelCase" {
+    const allocator = std.testing.allocator;
+    const result = try toCamelCase(allocator, "order-item");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("orderItem", result);
+}
+
+test "toSnakeCase hyphen to underscore" {
+    const allocator = std.testing.allocator;
+    const result = try toSnakeCase(allocator, "user-profile");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("user_profile", result);
+}
+
+test "commonTablePrefix finds shared prefix" {
+    const allocator = std.testing.allocator;
+    const names = &[_][]const u8{ "order_header", "order_line", "order_payment" };
+    const prefix = commonTablePrefix(names);
+    defer allocator.free(prefix);
+    try std.testing.expectEqualStrings("order", prefix);
+}
+
+test "inferModuleName from table list" {
+    const allocator = std.testing.allocator;
+    const tables = &[_]TableDef{
+        .{ .name = "ad_category", .columns = &.{}, .indexes = &.{} },
+        .{ .name = "ad_banner", .columns = &.{}, .indexes = &.{} },
+    };
+    const name = try inferModuleName(allocator, tables);
+    defer allocator.free(name);
+    try std.testing.expectEqualStrings("ad", name);
+}
+
