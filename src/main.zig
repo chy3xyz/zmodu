@@ -1341,7 +1341,7 @@ fn generateModulePersistence(allocator: std.mem.Allocator, module_name: []const 
         const method_name = try toCamelCase(allocator, table.name);
         defer allocator.free(method_name);
 
-        try buf.print(allocator, "    pub fn {s}Repo(self: *{s}Persistence) zigmodu.orm.Orm(zigmodu.SqlxBackend).Repository(model.{s}) {{\n", .{ method_name, pascal_module, model_name });
+        try buf.print(allocator, "    pub fn {s}Repo(self: *{s}Persistence) data.orm.Orm(data.SqlxBackend).Repository(model.{s}) {{\n", .{ method_name, pascal_module, model_name });
         try buf.appendSlice(allocator, "        return .{ .orm = &self.orm };\n");
         try buf.appendSlice(allocator, "    }\n\n");
     }
@@ -1368,7 +1368,7 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         const list_method = try std.fmt.allocPrint(allocator, "list{s}s", .{model_name});
         defer allocator.free(list_method);
 
-        try buf.print(allocator, "    pub fn {s}(self: *{s}Service, page: usize, size: usize) !zigmodu.orm.PageResult(model.{s}) {{\n", .{ list_method, pascal_module, model_name });
+        try buf.print(allocator, "    pub fn {s}(self: *{s}Service, page: usize, size: usize) !data.orm.PageResult(model.{s}) {{\n", .{ list_method, pascal_module, model_name });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
         try buf.appendSlice(allocator, "        return try repo.findPage(page, size);\n");
         try buf.appendSlice(allocator, "    }\n\n");
@@ -1464,7 +1464,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
 
         if (style == .java) {
             // -- Java-style list handler (pageNo/pageSize → page, sendPageResult)
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{list_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{list_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const pageNo = std.fmt.parseInt(usize, ctx.query.get(\"pageNo\") orelse \"1\", 10) catch 1;\n");
             try buf.appendSlice(allocator, "        const pageSize = std.fmt.parseInt(usize, ctx.query.get(\"pageSize\") orelse \"10\", 10) catch 10;\n");
@@ -1480,7 +1480,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "    }\n\n");
 
             // Java-style get handler (query param id)
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{get_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{get_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.query.get(\"id\") orelse \"\", 10) catch 0;\n");
             try buf.print(allocator, "        if (try self.service.{s}(id)) |entity| {{\n", .{get_fn});
@@ -1489,7 +1489,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "    }\n\n");
 
             // Java-style create handler
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{create_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{create_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{ try ctx.sendFail(400, \"Invalid body\"); return; }};\n", .{model_name});
             try buf.print(allocator, "        const created = try self.service.{s}(entity);\n", .{create_fn});
@@ -1497,7 +1497,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "    }\n\n");
 
             // Java-style update handler
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{update_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{update_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{ try ctx.sendFail(400, \"Invalid body\"); return; }};\n", .{model_name});
             try buf.print(allocator, "        try self.service.{s}(entity);\n", .{update_fn});
@@ -1505,7 +1505,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "    }\n\n");
 
             // Java-style delete handler
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{delete_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{delete_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.query.get(\"id\") orelse \"\", 10) catch 0;\n");
             try buf.print(allocator, "        try self.service.{s}(id);\n", .{delete_fn});
@@ -1513,7 +1513,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "    }\n\n");
         } else {
             // Default-style handlers (unchanged)
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{list_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{list_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const page_str = ctx.query.get(\"page\") orelse \"0\";\n");
             try buf.appendSlice(allocator, "        const size_str = ctx.query.get(\"size\") orelse \"10\";\n");
@@ -1531,7 +1531,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
             try buf.appendSlice(allocator, "    }\n\n");
 
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{get_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{get_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const id_str = ctx.params.get(\"id\") orelse {\n");
             try buf.print(allocator, "            std.log.warn(\"[{s}] get: missing id\", .{{}});\n", .{module_name});
@@ -1547,7 +1547,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, entity);\n");
             try buf.appendSlice(allocator, "    }\n\n");
 
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{create_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{create_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
             try buf.print(allocator, "            std.log.warn(\"[{s}] create: invalid body\", .{{}});\n", .{module_name});
@@ -1558,7 +1558,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
             try buf.appendSlice(allocator, "    }\n\n");
 
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{update_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{update_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
             try buf.print(allocator, "            std.log.warn(\"[{s}] update: invalid body\", .{{}});\n", .{module_name});
@@ -1569,7 +1569,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, entity);\n");
             try buf.appendSlice(allocator, "    }\n\n");
 
-            try buf.print(allocator, "    fn {s}(ctx: *zigmodu.http_server.Context) !void {{\n", .{delete_fn});
+            try buf.print(allocator, "    fn {s}(ctx: *http.Context) !void {{\n", .{delete_fn});
             try buf.print(allocator, "        const self: *{s}Api = @ptrCast(@alignCast(ctx.user_data orelse return error.InternalError));\n", .{pascal_module});
             try buf.appendSlice(allocator, "        const id_str = ctx.params.get(\"id\") orelse {\n");
             try buf.print(allocator, "            std.log.warn(\"[{s}] delete: missing id\", .{{}});\n", .{module_name});
@@ -1744,8 +1744,15 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
         const dependencies_str = try inferModuleDependencies(allocator, tables, module_name, 0);
         defer allocator.free(dependencies_str);
 
-        const module_code = try generateModuleZig(allocator, module_name, dependencies_str);
+        var module_code = try generateModuleZig(allocator, module_name, dependencies_str);
         defer allocator.free(module_code);
+        if (opts.enable_events) {
+            const code_with_init = try replaceAllStr(allocator, module_code, "// <<INIT_EVENTS>>", "try events.init(&event_bus);");
+            allocator.free(module_code);
+            const code_full = try replaceAllStr(allocator, code_with_init, "// <<EVENTS_SECTION>>", "const events = @import(\"events.zig\");\nconst event_bus = events.bus orelse undefined;");
+            allocator.free(code_with_init);
+            module_code = code_full;
+        }
         const module_path = try std.fmt.allocPrint(allocator, "{s}/module.zig", .{module_dir});
         defer allocator.free(module_path);
         try writeFileGen(io, module_path, module_code, opts);
@@ -2995,7 +3002,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             try buf.print(allocator, "{s}.module, ", .{name});
         }
     }
-    try buf.appendSlice(allocator, "},\n        .{},\n    );\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthCheck(ctx: *zigmodu.http_server.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"ok\\\"}\");\n}\n");
+    try buf.appendSlice(allocator, "},\n        .{},\n    );\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthCheck(ctx: *http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"ok\\\"}\");\n}\n");
 
     return buf.toOwnedSlice(allocator);
 }

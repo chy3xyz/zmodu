@@ -28,14 +28,14 @@ pub fn configure(cfg: Config) void {
 // ── Lifecycle ──────────────────────────────────────────────
 pub fn init() !void {
     std.log.info("[{s}] initializing", .{info.name});
-    <<INIT_EVENTS>>
+    // <<INIT_EVENTS>>
 }
 
 pub fn deinit() void {
     std.log.info("[{s}] shutting down", .{info.name});
 }
 
-<<EVENTS_SECTION>>
+// <<EVENTS_SECTION>>
 
 // ── Health Check ───────────────────────────────────────────
 pub fn registerHealthChecks(endpoint: *zigmodu.HealthEndpoint) !void {
