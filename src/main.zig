@@ -2830,6 +2830,55 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(agents_path);
     try writeFileGen(io, agents_path, agents_md, gen_opts);
 
+    // 12. Generate .ai/prompts/ directory with AI task templates
+    const ai_dir = try std.fmt.allocPrint(allocator, "{s}/.ai/prompts", .{project_dir});
+    defer allocator.free(ai_dir);
+    try ensureDirGen(io, ai_dir, gen_opts);
+
+    const add_mod_prompt =
+        \\# Add a new module
+        \\
+        \\## Files to create (src/modules/<name>/)
+        \\1. module.zig — info + init/deinit + registerHealthChecks
+        \\2. model.zig — pub const X = struct { pub const sql_table_name, fields };
+        \\3. persistence.zig — XRepo() accessors returning data.Repository(T)
+        \\4. service.zig — XService with CRUD + EventBus(T)
+        \\5. api.zig — XApi with registerRoutes() + resolve()
+        \\6. root.zig — barrel re-exports
+        \\
+        \\## Wiring (src/main.zig)
+        \\- Import: const <name> = @import("modules/<name>/root.zig");
+        \\- Persistence: var <name>_p = <name>.persistence.XPersistence.init(backend);
+        \\- Service: var <name>_svc = <name>.service.XService.init(&<name>_p);
+        \\- API: var <name>_api = <name>.api.XApi.init(&<name>_svc);
+        \\- Routes: try <name>_api.registerRoutes(&root);
+        \\- Lifecycle: .build(.{ ..., <name>.module, ... })
+        \\
+    ;
+    const amp_path = try std.fmt.allocPrint(allocator, "{s}/add_module.md", .{ai_dir});
+    defer allocator.free(amp_path);
+    try writeFileGen(io, amp_path, add_mod_prompt, gen_opts);
+
+    const ctx_prompt =
+        \\# Project AI Context
+        \\
+        \\## Stack
+        \\- Framework: ZigModu v0.9.4 (Zig 0.16.0)
+        \\- Database: MySQL/PostgreSQL/SQLite via sqlx
+        \\- HTTP: zigmodu.http.Server (async fiber-based)
+        \\
+        \\## Conventions
+        \\- Domain imports: const http = zigmodu.http; const data = zigmodu.data;
+        \\- Module lifecycle: init() → deinit() (reverse dependency order)
+        \\- API: RESTful via http.RouteGroup, handlers use resolve(ctx)
+        \\- ORM: data.Repository(T) returned by persistence Repo accessors
+        \\- Health: registerHealthChecks() + HealthEndpoint in main.zig
+        \\
+    ;
+    const ctx_path = try std.fmt.allocPrint(allocator, "{s}/context.md", .{ai_dir});
+    defer allocator.free(ctx_path);
+    try writeFileGen(io, ctx_path, ctx_prompt, gen_opts);
+
     if (!sopts.dry_run) {
         try finalizeBuildZigZonFingerprint(io, allocator, sopts.project_name, zon_path);
     }
