@@ -2196,12 +2196,7 @@ fn cmdMigration(io: std.Io, allocator: std.mem.Allocator, args: []const []const 
     defer allocator.free(filepath);
 
     // Check if file exists (never overwrite migration files)
-    const check = std.Io.Dir.cwd().openFile(io, filepath, .{}) catch null;
-    if (check != null) {
-        std.log.err("Migration file already exists: {s}", .{filepath});
-        return error.RefuseOverwrite;
-    }
-
+    _ = std.Io.Dir.cwd().createFile(io, filepath, .{ .exclusive = true }) catch |err| { if (err == error.PathAlreadyExists) { std.log.err("Migration file already exists: {s}", .{filepath}); return error.RefuseOverwrite; } return err; };
     const content = try std.fmt.allocPrint(allocator,
         \\-- version: {d:0>4}{d:0>2}{d:0>2}{d:0>2}{d:0>2}{d:0>2}
         \\-- description: {s}
@@ -2287,12 +2282,14 @@ fn cmdHealth(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         \\
     ;
 
-    const check_result = std.Io.Dir.cwd().openFile(io, filepath, .{}) catch null;
-    if (check_result != null) {
-        std.log.err("File already exists: {s} (use --force to overwrite)", .{filepath});
-        return error.RefuseOverwrite;
-    }
-
+    // Exclusive create prevents TOCTOU race
+    _ = std.Io.Dir.cwd().createFile(io, filepath, .{ .exclusive = true }) catch |err| {
+        if (err == error.PathAlreadyExists) {
+            std.log.err("File already exists: {s} (use --force to overwrite)", .{filepath});
+            return error.RefuseOverwrite;
+        }
+        return err;
+    };
     try writeFile(io, filepath, content);
 
     std.log.info("Created health check: {s}", .{filepath});
@@ -2376,12 +2373,14 @@ fn cmdConfig(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         \\
     );
 
-    const check_result = std.Io.Dir.cwd().openFile(io, filepath, .{}) catch null;
-    if (check_result != null) {
-        std.log.err("File already exists: {s} (use --force to overwrite)", .{filepath});
-        return error.RefuseOverwrite;
-    }
-
+    // Exclusive create prevents TOCTOU race
+    _ = std.Io.Dir.cwd().createFile(io, filepath, .{ .exclusive = true }) catch |err| {
+        if (err == error.PathAlreadyExists) {
+            std.log.err("File already exists: {s} (use --force to overwrite)", .{filepath});
+            return error.RefuseOverwrite;
+        }
+        return err;
+    };
     try writeFile(io, filepath, buf.items);
 
     std.log.info("Created config validator: {s}", .{filepath});
