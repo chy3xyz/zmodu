@@ -14,6 +14,7 @@ const Command = enum {
     migration,
     health,
     config,
+    test,
     help,
     version,
 };
@@ -200,6 +201,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .migration => try cmdMigration(io, allocator, cmd_args),
         .health => try cmdHealth(io, allocator, cmd_args),
         .config => try cmdConfig(io, allocator, cmd_args),
+        .test => try cmdTest(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -303,6 +305,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "migrate")) return .migration;
     if (std.mem.eql(u8, cmd, "health")) return .health;
     if (std.mem.eql(u8, cmd, "config")) return .config;
+    if (std.mem.eql(u8, cmd, "test")) return .test;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -330,6 +333,7 @@ fn printUsage() void {
         \\  migration <n>   Generate Flyway-style migration file (V{timestamp}__{name}.sql)
         \\  health          Generate health check endpoint boilerplate
         \\  config          Generate ExternalizedConfig validator boilerplate
+  test <module>   Generate integration test scaffolding
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -348,6 +352,7 @@ fn printUsage() void {
         \\  zmodu migration add-index --dir src/migrations
         \\  zmodu health --out src/modules/app
         \\  zmodu config --keys DB_HOST,DB_PORT,DB_NAME
+  zmodu test user
         \\
         \\Flags (where supported):
         \\  --dry-run   Preview writes / mkdir; no files created
@@ -2387,6 +2392,70 @@ fn cmdConfig(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
 }
 
 // ── bigdemo: shortcut to regenerate the full shopdemo ──────────────
+
+
+// ── test: generate integration test scaffolding ──────────────────
+
+fn cmdTest(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.log.err("Usage: zmodu test <module-name> [--out <dir>]", .{});
+        return error.CliUsage;
+    }
+    const module_name = args[0];
+    var out_dir: []const u8 = "src/modules";
+
+    var i: usize = 1;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--out")) {
+            if (i + 1 >= args.len) return error.CliUsage;
+            out_dir = args[i + 1]; i += 1;
+        }
+    }
+
+    const mod_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ out_dir, module_name });
+    defer allocator.free(mod_dir);
+    std.Io.Dir.cwd().createDirPath(io, mod_dir) catch {};
+    const fp = try std.fmt.allocPrint(allocator, "{s}/test.zig", .{mod_dir});
+    defer allocator.free(fp);
+
+    if (std.Io.Dir.cwd().openFile(io, fp, .{})) |_| {
+        std.log.err("File already exists: {s}", .{fp});
+        return error.RefuseOverwrite;
+    } else |_| {}
+
+    const pascal_mod = try toPascalCase(allocator, module_name);
+    defer allocator.free(pascal_mod);
+
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    try buf.print(allocator,
+        \const std = @import("std");
+        \const zigmodu = @import("zigmodu");
+        \const module = @import("module.zig");
+        \const service = @import("service.zig");
+        \const model = @import("model.zig");
+        \
+        \test "{s}: service health check" {{
+        \    try zigmodu.HealthEndpoint.alwaysUp(null);
+        \}}
+        \
+        \test "{s}: module lifecycle init/deinit" {{
+        \    try module.init();
+        \    module.deinit();
+        \}}
+        \
+        \test "{s}: CRUD integration" {{
+        \    // Add database-dependent tests here
+        \    const allocator = std.testing.allocator;
+        \    _ = allocator;
+        \}}
+        \
+    , .{ module_name, module_name, module_name });
+
+    try writeFile(io, fp, buf.items);
+    std.log.info("Created test scaffold: {s}", .{fp});
+}
+
 
 fn cmdBigdemo(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     _ = args; // no extra args — everything is hardcoded
