@@ -18,13 +18,6 @@ const Command = enum {
     version,
 };
 
-const Config = struct {
-    project_name: []const u8 = "",
-    module_name: []const u8 = "",
-    template_dir: []const u8 = "templates",
-    output_dir: []const u8 = ".",
-};
-
 const CodeStyle = enum { default, java };
 
 const GenOptions = struct {
@@ -387,9 +380,17 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         return error.CliUsage;
     }
 
+    // Refuse to overwrite existing projects
+    const existing_zon = try std.fmt.allocPrint(allocator, "{s}/build.zig.zon", .{project_name});
+    defer allocator.free(existing_zon);
+    if (std.Io.Dir.cwd().openFile(io, existing_zon, .{})) |f| {
+        f.close(io);
+        std.log.err("Project '{s}' already exists. Use --force to overwrite.", .{project_name});
+        return error.RefuseOverwrite;
+    } else |_| {}
+
     std.log.info("Creating new project: {s}", .{project_name});
 
-    // Create project directory
     try std.Io.Dir.cwd().createDirPath(io, project_name);
 
     // Create subdirectories
@@ -2132,7 +2133,10 @@ fn cmdMigration(io: std.Io, allocator: std.mem.Allocator, args: []const []const 
         return error.CliUsage;
     }
 
-    // Create directory if needed
+    if (pathContainsDotDot(dir)) {
+        std.log.err("Migration directory must not contain '..': {s}", .{dir});
+        return error.CliUsage;
+    }
     std.Io.Dir.cwd().createDirPath(io, dir) catch |err| {
         std.log.err("Cannot create migration directory '{s}': {s}", .{ dir, @errorName(err) });
         return err;
@@ -2237,6 +2241,10 @@ fn cmdHealth(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         }
     }
 
+    if (pathContainsDotDot(out_dir)) {
+        std.log.err("Output directory must not contain '..': {s}", .{out_dir});
+        return error.CliUsage;
+    }
     const target_dir = if (module_name) |mn|
         try std.fs.path.join(allocator, &.{ out_dir, mn })
     else
@@ -2314,6 +2322,10 @@ fn cmdConfig(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         }
     }
 
+    if (pathContainsDotDot(out_dir)) {
+        std.log.err("Output directory must not contain '..': {s}", .{out_dir});
+        return error.CliUsage;
+    }
     std.Io.Dir.cwd().createDirPath(io, out_dir) catch |err| {
         std.log.err("Cannot create directory '{s}': {s}", .{ out_dir, @errorName(err) });
         return err;
