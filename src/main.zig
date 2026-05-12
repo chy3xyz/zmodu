@@ -1672,6 +1672,45 @@ fn generateAiContext(allocator: std.mem.Allocator, module_name: []const u8, tabl
     return buf.toOwnedSlice(allocator);
 }
 
+fn generateModuleEvents(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef) ![]const u8 {
+    var buf: std.ArrayList(u8) = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+
+    const pascal_mod = try toPascalCase(allocator, module_name);
+    defer allocator.free(pascal_mod);
+
+    try buf.appendSlice(allocator, "const std = @import(\"std\");\n");
+    try buf.appendSlice(allocator, "const zigmodu = @import(\"zigmodu\");\n\n");
+
+    // Event type definitions
+    for (tables) |table| {
+        const model_name = try toPascalCase(allocator, table.name);
+        defer allocator.free(model_name);
+        try buf.print(allocator, "pub const {s}Created = struct {{\n", .{model_name});
+        try buf.print(allocator, "    {s}_id: i64,\n", .{table.name});
+        try buf.appendSlice(allocator, "    timestamp_ms: i64,\n");
+        try buf.appendSlice(allocator, "};\n\n");
+    }
+
+    // EventBus instance
+    try buf.print(allocator, "var bus: ?zigmodu.TypedEventBus({s}Event) = null;\n\n", .{pascal_mod});
+    try buf.print(allocator, "pub const {s}Event = union(enum) {{\n", .{pascal_mod});
+    for (tables) |table| {
+        const model_name = try toPascalCase(allocator, table.name);
+        defer allocator.free(model_name);
+        try buf.print(allocator, "    {s}Created: {s}Created,\n", .{ model_name, model_name });
+    }
+    try buf.appendSlice(allocator, "};\n\n");
+    try buf.print(allocator, "pub fn init(b: *zigmodu.TypedEventBus({s}Event)) void {{\n", .{pascal_mod});
+    try buf.appendSlice(allocator, "    bus = b;\n");
+    try buf.appendSlice(allocator, "}\n\n");
+    try buf.print(allocator, "pub fn publish(event: {s}Event) void {{\n", .{pascal_mod});
+    try buf.appendSlice(allocator, "    if (bus) |b| b.publish(event);\n");
+    try buf.appendSlice(allocator, "}}\n");
+
+    return buf.toOwnedSlice(allocator);
+}
+
 fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8, module_name: []const u8, tables: []const TableDef, opts: GenOptions) !void {
     const module_dir = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ out_dir, module_name });
     defer allocator.free(module_dir);
@@ -1741,6 +1780,14 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
         const arch_path = try std.fmt.allocPrint(allocator, "{s}/_arch_test.zig", .{module_dir});
         defer allocator.free(arch_path);
         try writeFileGen(io, arch_path, arch_with_deps, opts);
+    }
+
+    if (opts.enable_events) {
+        const events_code = try generateModuleEvents(allocator, module_name, tables);
+        defer allocator.free(events_code);
+        const events_path = try std.fmt.allocPrint(allocator, "{s}/events.zig", .{module_dir});
+        defer allocator.free(events_path);
+        try writeFileGen(io, events_path, events_code, opts);
     }
 
     std.log.info("Generated module '{s}' at {s}/ with {d} table(s)", .{ module_name, module_dir, tables.len });
