@@ -541,6 +541,9 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         try writeFile(io, p_path, p.content);
     }
 
+    // Generate .claude/skills/ — Claude Code agent skills
+    try generateClaudeSkills(io, allocator, project_name, .{ .dry_run = false, .force = true });
+
     std.log.info("Project {s} created successfully!", .{project_name});
     std.log.info("  cd {s} && zig build run", .{project_name});
 }
@@ -2879,12 +2882,203 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(ctx_path);
     try writeFileGen(io, ctx_path, ctx_prompt, gen_opts);
 
+    // 13. Generate .claude/skills/ — Claude Code agent skills
+    try generateClaudeSkills(io, allocator, project_dir, gen_opts);
+
     if (!sopts.dry_run) {
         try finalizeBuildZigZonFingerprint(io, allocator, sopts.project_name, zon_path);
     }
 
     std.log.info("Scaffold complete: {d} tables → {d} modules in '{s}'", .{ tables.len, module_names.items.len, project_dir });
     std.log.info("  cd {s} && zig build run", .{project_dir});
+}
+
+fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8, gen_opts: GenOptions) !void {
+    const skills_dir = try std.fmt.allocPrint(allocator, "{s}/.claude/skills", .{out_dir});
+    defer allocator.free(skills_dir);
+    try ensureDirGen(io, skills_dir, gen_opts);
+
+    const skill_dirs = [_][]const u8{ "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm" };
+    for (skill_dirs) |sd| {
+        const d = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ skills_dir, sd });
+        defer allocator.free(d);
+        try ensureDirGen(io, d, gen_opts);
+    }
+
+    // zigmodu-project
+    const sp = try std.fmt.allocPrint(allocator, "{s}/zigmodu-project/SKILL.md", .{skills_dir});
+    defer allocator.free(sp);
+    try writeFileGen(io, sp,
+        \\---
+        \\name: zigmodu-project
+        \\description: Navigate and understand a ZigModu project. Use when exploring the codebase, understanding module conventions, or learning the project layout.
+        \\---
+        \\
+        \\# ZigModu Project Navigation
+        \\
+        \\## Module Structure (6 files per module)
+        \\```
+        \\src/modules/<name>/
+        \\├── module.zig      # info + init/deinit + registerHealthChecks
+        \\├── model.zig       # data structs (sql_table_name + fields)
+        \\├── persistence.zig # ORM repositories → data.Repository(T)
+        \\├── service.zig     # business logic + EventBus(T) + CRUD
+        \\├── api.zig         # REST routes + resolve(ctx) helper
+        \\└── root.zig        # barrel re-exports
+        \\```
+        \\
+        \\## Module Contract
+        \\```zig
+        \\pub const info = api.Module{ .name = "x", .dependencies = &.{}, .is_internal = false };
+        \\pub fn init() !void { ... }
+        \\pub fn deinit() void { ... }
+        \\pub fn registerHealthChecks(endpoint: *zigmodu.HealthEndpoint) !void { ... }
+        \\```
+        \\
+        \\## Import Conventions
+        \\- module.zig → `const api = zigmodu.api;`
+        \\- persistence.zig → `const data = @import("zigmodu").data;`
+        \\- service.zig → `const data = zigmodu.data;`
+        \\- api.zig → `const http = @import("zigmodu").http;`
+        \\
+        \\## Building
+        \\```bash
+        \\zig build              # compile
+        \\zig build run          # run (reads HTTP_PORT, DB_* env vars)
+        \\zig build test         # run all tests
+        \\```
+        \\
+    , gen_opts);
+
+    // zigmodu-module
+    const sm = try std.fmt.allocPrint(allocator, "{s}/zigmodu-module/SKILL.md", .{skills_dir});
+    defer allocator.free(sm);
+    try writeFileGen(io, sm,
+        \\---
+        \\name: zigmodu-module
+        \\description: Create a new ZigModu module. Use when adding a domain module, CRUD resource, or business logic unit.
+        \\---
+        \\
+        \\# Create a ZigModu Module
+        \\
+        \\## Quick Start
+        \\```bash
+        \\zmodu module <name>          # CLI scaffold
+        \\zmodu orm --sql s.sql --out src/modules  # from SQL
+        \\```
+        \\
+        \\## Manual Creation Checklist
+        \\1. `mkdir -p src/modules/<name>`
+        \\2. Create 6 files: module.zig, model.zig, persistence.zig, service.zig, api.zig, root.zig
+        \\3. Wire into `src/main.zig`:
+        \\   - Import: `const <name> = @import("modules/<name>/root.zig");`
+        \\   - Init: `var x_p = <name>.persistence.XPersistence.init(backend);`
+        \\   - Routes: `try <name>_api.registerRoutes(&root);`
+        \\   - Lifecycle: `.build(.{ ..., <name>.module, ... })`
+        \\
+        \\## Model Rules
+        \\- `sql_table_name` const maps to database table
+        \\- NOT NULL → non-optional, nullable → `?Type`
+        \\- Primary key: `id: i64` (auto-detected by ORM)
+        \\- VARCHAR/TEXT → `[]const u8`, INT → `i64`, FLOAT → `f64`
+        \\- No hand-written jsonStringify needed
+        \\
+        \\## Service Pattern
+        \\```zig
+        \\pub fn listThings(self: *S, page: usize, size: usize) !data.orm.PageResult(model.Thing) {
+        \\    var repo = self.persistence.thingRepo();
+        \\    return try repo.findPage(page, size);
+        \\}
+        \\```
+        \\
+        \\## Zig Keywords → _mod suffix
+        \\return → return_mod, error → error_mod, test → test_mod, app → app_mod
+        \\
+    , gen_opts);
+
+    // zigmodu-api
+    const sa = try std.fmt.allocPrint(allocator, "{s}/zigmodu-api/SKILL.md", .{skills_dir});
+    defer allocator.free(sa);
+    try writeFileGen(io, sa,
+        \\---
+        \\name: zigmodu-api
+        \\description: Add REST API endpoints to a ZigModu module. Use when adding routes, custom handlers, or middleware.
+        \\---
+        \\
+        \\# Add REST API Endpoints
+        \\
+        \\## Route Registration
+        \\```zig
+        \\// In api.zig registerRoutes():
+        \\try group.get("/things/custom", handler, @ptrCast(@alignCast(self)));
+        \\try group.post("/things", createHandler, @ptrCast(@alignCast(self)));
+        \\```
+        \\
+        \\## Handler Pattern
+        \\```zig
+        \\fn handler(ctx: *http.Context) !void {
+        \\    const s = resolve(ctx);
+        \\    // read: ctx.params.get("id"), ctx.query.get("key"), ctx.bindJson(T)
+        \\    // write: ctx.json(code, str), ctx.jsonStruct(code, value)
+        \\}
+        \\```
+        \\
+        \\## Standard REST Routes
+        \\| Method | Path | Handler |
+        \\|--------|------|---------|
+        \\| GET | /things | list (paginated) |
+        \\| GET | /things/:id | get by id |
+        \\| POST | /things | create |
+        \\| PUT | /things/:id | update |
+        \\| DELETE | /things/:id | delete |
+        \\
+        \\## Error Handling
+        \\- bindJson errors → `ctx.json(400, "{\\"error\\":\\"invalid body\\"}")`
+        \\- Not found → `ctx.json(404, "{\\"error\\":\\"not found\\"}")`
+        \\- Path param parse failure → `return error.BadRequest`
+        \\
+    , gen_opts);
+
+    // zigmodu-orm
+    const so = try std.fmt.allocPrint(allocator, "{s}/zigmodu-orm/SKILL.md", .{skills_dir});
+    defer allocator.free(so);
+    try writeFileGen(io, so,
+        \\---
+        \\name: zigmodu-orm
+        \\description: Generate ORM modules from SQL schema. Use when creating persistence layers or scaffolding from CREATE TABLE statements.
+        \\---
+        \\
+        \\# Generate ORM from SQL
+        \\
+        \\## Commands
+        \\```bash
+        \\zmodu orm --sql schema.sql --out src/modules           # auto-group
+        \\zmodu orm --sql s.sql --module name --force            # single module
+        \\zmodu scaffold --sql s.sql --name app --with-metrics   # full project
+        \\zmodu bigdemo                                          # reference shopdemo
+        \\```
+        \\
+        \\## SQL Type → Zig Type
+        \\| SQL | Zig |
+        \\|-----|-----|
+        \\| INT/BIGINT/SERIAL | `i64` |
+        \\| VARCHAR/TEXT/JSON | `[]const u8` |
+        \\| BOOLEAN | `bool` |
+        \\| FLOAT/DOUBLE/DECIMAL | `f64` |
+        \\| DATETIME/TIMESTAMP | `[]const u8` |
+        \\
+        \\## Auto-Grouping
+        \\Tables with common prefix (e.g. `order_`) → single module.
+        \\Prefix is stripped from model names and route paths.
+        \\
+        \\## FOREIGN KEY → Dependency
+        \\`FOREIGN KEY (user_id) REFERENCES user(id)` → module depends on "user"
+        \\
+        \\## Regeneration Safety
+        \\Custom logic in `service_ext.zig` and `api_ext.zig` survives regeneration.
+        \\Use `--force` to overwrite, `--dry-run` to preview.
+        \\
+    , gen_opts);
 }
 
 fn isZigReserved(name: []const u8) bool {
