@@ -1424,8 +1424,11 @@ fn inferModuleDependencies(allocator: std.mem.Allocator, tables: []const TableDe
     for (tables) |table| {
         for (table.foreign_keys) |fk| {
             const ref_module = try inferModuleName(allocator, fk.ref_table, strip_prefix_len);
-            // Only add dependency if the referenced module is different from current module
-            if (!std.mem.eql(u8, ref_module, module_name)) {
+            // Skip self-ref: same module, or singular/plural pair after merge
+            const is_self = std.mem.eql(u8, ref_module, module_name) or
+                (module_name.len > 0 and ref_module.len == module_name.len + 1 and std.mem.startsWith(u8, ref_module, module_name) and ref_module[ref_module.len-1] == 's') or
+                (ref_module.len > 0 and module_name.len == ref_module.len + 1 and std.mem.startsWith(u8, module_name, ref_module) and module_name[module_name.len-1] == 's');
+            if (!is_self) {
                 if (!seen.contains(ref_module)) {
                     try seen.put(ref_module, {});
                     try deps.append(allocator, ref_module);
@@ -1480,14 +1483,13 @@ fn groupTablesByModule(allocator: std.mem.Allocator, tables: []const TableDef) !
     }
 
     // Post-process: merge singular/plural splits (e.g. orders → order)
-    // Collect merge candidates first, then apply
     var merge_keys = std.ArrayList([]const u8).empty;
     var kit = module_map.keyIterator();
     while (kit.next()) |k| {
         const key = k.*;
         if (key.len > 1 and key[key.len-1] == 's') {
             const singular = key[0..key.len-1];
-            if (module_map.get(singular)) |_| try merge_keys.append(allocator, key);
+            if (module_map.get(singular)) |_| try merge_keys.append(allocator, try allocator.dupe(u8, key));
         }
     }
     for (merge_keys.items) |key| {
@@ -1499,6 +1501,7 @@ fn groupTablesByModule(allocator: std.mem.Allocator, tables: []const TableDef) !
         }
         _ = module_map.remove(key);
     }
+    for (merge_keys.items) |k| allocator.free(k);
     merge_keys.deinit(allocator);
 
     return module_map;
@@ -1527,7 +1530,7 @@ fn generateModuleModel(allocator: std.mem.Allocator, module_name: []const u8, ta
         for (table.columns) |col| {
             if (col.col_type == .unknown and col.name.len == 0) continue;
             const base = zigScalarColumnType(col.col_type);
-            if (col.nullable) {
+            if (col.nullable or col.has_default) {
                 try buf.print(allocator, "    {s}: ?{s},\n", .{ col.name, base });
             } else {
                 try buf.print(allocator, "    {s}: {s},\n", .{ col.name, base });
@@ -1633,11 +1636,11 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         }
 
         // Generate validate method from SQL constraints
-        try buf.print(allocator, "    pub fn validate{s}(entity: model.{s}) !void {{\n", .{ model_name, model_name });
+        try buf.print(allocator, "    pub fn validate{s}(_: *{s}Service, entity: model.{s}) !void {{\n", .{ model_name, pascal_module, model_name });
         var has_rules = false;
         for (table.columns) |col| {
             if (col.col_type == .unknown and col.name.len == 0) continue;
-            if (!col.nullable and col.col_type == .string) {
+            if (!col.nullable and !col.has_default and col.col_type == .string) {
                 try buf.print(allocator, "        if (entity.{s}.len == 0) return error.ValidationFailed;\n", .{col.name});
                 has_rules = true;
             }
@@ -1653,7 +1656,8 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
 fn pluralizeRoute(allocator: std.mem.Allocator, singular: []const u8) ![]const u8 {
     if (singular.len == 0) return try allocator.dupe(u8, singular);
     const last = singular[singular.len - 1];
-    if (last == 's' or last == 'x' or last == 'z') return try std.fmt.allocPrint(allocator, "{s}es", .{singular});
+    if (last == 's') return try allocator.dupe(u8, singular); // already plural
+    if (last == 'x' or last == 'z') return try std.fmt.allocPrint(allocator, "{s}es", .{singular});
     if (std.mem.endsWith(u8, singular, "ch") or std.mem.endsWith(u8, singular, "sh")) return try std.fmt.allocPrint(allocator, "{s}es", .{singular});
     if (last == 'y' and singular.len > 1) {
         const prev = singular[singular.len - 2];
