@@ -141,8 +141,8 @@ fn isSafeModuleDirName(name: []const u8) bool {
 }
 
 /// Released tarball for `zmodu new` projects (hash from `zig build` / missing-hash hint, Zig 0.16).
-const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.9.4.tar.gz";
-const zigmodu_zon_hash = "zigmodu-0.9.4-U40vs-zEEwA3i5WBPPAIAxPIgjWAUqIK01QlwUDmn-Vd";
+const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.9.5.tar.gz";
+const zigmodu_zon_hash = "zigmodu-0.9.4-U40vs_kWFAB_qe2vsNCSJf-Fxkgg2ME6SnW_z6Zmr7B7";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -2898,7 +2898,7 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
     defer allocator.free(skills_dir);
     try ensureDirGen(io, skills_dir, gen_opts);
 
-    const skill_dirs = [_][]const u8{ "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm" };
+    const skill_dirs = [_][]const u8{ "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm", "zigmodu-analyze", "zigmodu-translate", "zigmodu-harness" };
     for (skill_dirs) |sd| {
         const d = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ skills_dir, sd });
         defer allocator.free(d);
@@ -3077,6 +3077,126 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\## Regeneration Safety
         \\Custom logic in `service_ext.zig` and `api_ext.zig` survives regeneration.
         \\Use `--force` to overwrite, `--dry-run` to preview.
+        \\
+    , gen_opts);
+
+    // zigmodu-analyze
+    const san = try std.fmt.allocPrint(allocator, "{s}/zigmodu-analyze/SKILL.md", .{skills_dir});
+    defer allocator.free(san);
+    try writeFileGen(io, san,
+        \\---
+        \\name: zigmodu-analyze
+        \\description: Analyze Java/PHP project to extract schema, routes, module boundaries. Use when migrating legacy backend to ZigModu.
+        \\---
+        \\
+        \\# Analyze Legacy Backend
+        \\
+        \\## Phase 1 of Migration Harness
+        \\
+        \\## Detect Framework
+        \\```bash
+        \\find . -name "pom.xml" | head -1  # Spring Boot
+        \\find . -name "composer.json" | head -1  # Laravel
+        \\```
+        \\
+        \\## Extract Schema
+        \\Spring Boot: `grep -rn "@Entity\|@Table" src/main/java -l`
+        \\Laravel: `ls database/migrations/`
+        \\
+        \\## Extract API Routes
+        \\Spring Boot: `grep -rn "@GetMapping\|@PostMapping" src/main/java -A2`
+        \\Laravel: `php artisan route:list --json`
+        \\
+        \\## Output: analysis.json
+        \\Run `zmodu analyze --source java|php --input ./legacy/ --output analysis.json`
+        \\to produce structured project image for Phase 2 scaffold.
+        \\
+    , gen_opts);
+
+    // zigmodu-translate
+    const stn = try std.fmt.allocPrint(allocator, "{s}/zigmodu-translate/SKILL.md", .{skills_dir});
+    defer allocator.free(stn);
+    try writeFileGen(io, stn,
+        \\---
+        \\name: zigmodu-translate
+        \\description: Translate Java/PHP code to ZigModu Zig. Use when converting services, controllers, or domain logic.
+        \\---
+        \\
+        \\# Translate Legacy Code
+        \\
+        \\## Phase 3 of Migration Harness
+        \\
+        \\## Type Mapping
+        \\| Java/PHP | Zig |
+        \\|-----------|-----|
+        \\| String | `[]const u8` |
+        \\| int/Integer/long | `i64` |
+        \\| double/Double | `f64` |
+        \\| boolean | `bool` |
+        \\| Optional\<T\> | `?T` |
+        \\| List\<T\> | `[]T` |
+        \\| CompletableFuture\<T\> | `EventBus` publish/subscribe |
+        \\
+        \\## Confidence Tags
+        \\- `[AUTO]` Simple CRUD, no review needed
+        \\- `[REVIEW]` Business rules preserved, needs human confirmation
+        \\- `[MANUAL]` Complex logic, rewrite with SagaOrchestrator
+        \\
+        \\## Pattern: @Transactional → repo.transact()
+        \\```zig
+        \\try repo.transact(R, struct {{
+        \\    fn doTx(tx: *data.orm.Tx(data.SqlxBackend)) !R {{
+        \\        // transactional logic here
+        \\    }}
+        \\}}.doTx);
+        \\```
+        \\
+        \\## Exception → Error Union
+        \\`throw BusinessException("msg")` → `return error.BusinessError`
+        \\`@Autowired` fields → explicit `init()` wiring
+        \\`@Value` config → `ExternalizedConfig` or env vars
+        \\
+    , gen_opts);
+
+    // zigmodu-harness
+    const sha = try std.fmt.allocPrint(allocator, "{s}/zigmodu-harness/SKILL.md", .{skills_dir});
+    defer allocator.free(sha);
+    try writeFileGen(io, sha,
+        \\---
+        \\name: zigmodu-harness
+        \\description: Run migration verification — diff test old vs new, verify schema, benchmark. Use when validating ZigModu migration.
+        \\---
+        \\
+        \\# Migration Verification Harness
+        \\
+        \\## Phase 4 of Migration Harness
+        \\
+        \\## Diff Proxy Architecture
+        \\```
+        \\Client → Reverse Proxy → Old Backend (:8080)
+        \\                   └→ New Backend (:8081) [mirror]
+        \\                        │
+        \\                   Diff Comparator → Pass/Fail Report
+        \\```
+        \\
+        \\## Quick Start
+        \\```bash
+        \\zmodu verify --old http://localhost:8080 --new http://localhost:8081
+        \\```
+        \\
+        \\## Verification Steps
+        \\1. Start both backends
+        \\2. Dump + diff schemas (`mysqldump --no-data`)
+        \\3. Replay production requests, compare responses
+        \\4. Normalize: timestamps, float precision, field order
+        \\5. Benchmark: `wrk -t4 -c100 -d30s` both endpoints
+        \\6. Canary: 1%%→5%%→10%%→25%%→50%%→100%% cutover
+        \\
+        \\## Abort Criteria
+        \\- Schema diff shows missing NOT NULL
+        \\- Payment endpoint returns different amounts
+        \\- Auth accepts invalid tokens
+        \\- Memory leak (RSS grows unbounded)
         \\
     , gen_opts);
 }
