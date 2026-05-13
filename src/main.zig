@@ -1640,8 +1640,8 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         // list
         try buf.print(allocator, "    fn list{s}s(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
-        try buf.appendSlice(allocator, "        const page = std.fmt.parseInt(usize, ctx.query.get(\"page\") orelse \"0\", 10) catch 0;\n");
-        try buf.appendSlice(allocator, "        const size = std.fmt.parseInt(usize, ctx.query.get(\"size\") orelse \"10\", 10) catch 10;\n");
+        try buf.appendSlice(allocator, "        const page = ctx.queryInt(usize, \"page\", 0);\n");
+        try buf.appendSlice(allocator, "        const size = ctx.queryInt(usize, \"size\", 10);\n");
         try buf.print(allocator, "        const result = try s.service.list{s}s(page, size);\n", .{model_name});
         try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
         try buf.appendSlice(allocator, "    }\n\n");
@@ -1649,7 +1649,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         // get
         try buf.print(allocator, "    fn get{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
-        try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
+        try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
         try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
@@ -1676,7 +1676,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         // delete
         try buf.print(allocator, "    fn delete{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
-        try buf.appendSlice(allocator, "        const id = std.fmt.parseInt(i64, ctx.params.get(\"id\") orelse return error.BadRequest, 10) catch return error.BadRequest;\n");
+        try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
         try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
         try buf.appendSlice(allocator, "        try ctx.json(204, \"\");\n");
         try buf.appendSlice(allocator, "    }\n\n");
