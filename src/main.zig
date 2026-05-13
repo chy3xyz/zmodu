@@ -30,6 +30,9 @@ const GenOptions = struct {
     split: bool = false,
     enable_events: bool = false,
     json_style: JsonStyle = .snake,
+    with_transactions: bool = false,
+    with_redis: bool = false,
+    with_websocket: bool = false,
 };
 
 const OrmCli = struct {
@@ -56,7 +59,8 @@ fn isOrmLongOption(token: []const u8) bool {
         std.mem.eql(u8, token, "--data-only") or
         std.mem.eql(u8, token, "--split") or
         std.mem.eql(u8, token, "--json-style") or
-        std.mem.eql(u8, token, "--enable-events");
+        std.mem.eql(u8, token, "--enable-events") or
+        std.mem.eql(u8, token, "--with-transactions");
 }
 
 fn parseOrmCli(args: []const []const u8) ParseOrmCliResult {
@@ -109,6 +113,8 @@ fn parseOrmCli(args: []const []const u8) ParseOrmCliResult {
             i += 1;
         } else if (std.mem.eql(u8, args[i], "--enable-events")) {
             opts.enable_events = true;
+        } else if (std.mem.eql(u8, args[i], "--with-transactions")) {
+            opts.with_transactions = true;
         } else {
             return .{ .err_unknown_flag = args[i] };
         }
@@ -1571,7 +1577,7 @@ fn generateModulePersistence(allocator: std.mem.Allocator, module_name: []const 
     return buf.toOwnedSlice(allocator);
 }
 
-fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize, enable_events: bool) ![]const u8 {
+fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize, enable_events: bool, with_transactions: bool) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
@@ -1618,6 +1624,13 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
         try buf.appendSlice(allocator, "        return try repo.delete(id);\n");
         try buf.appendSlice(allocator, "    }\n\n");
+
+        if (with_transactions) {
+            try buf.print(allocator, "    pub fn transact{s}(self: *{s}Service, comptime R: type, fn_tx: *const fn (*data.orm.Tx(data.SqlxBackend)) anyerror!R) !R {{\n", .{ model_name, pascal_module });
+            try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
+            try buf.appendSlice(allocator, "        return try repo.transact(R, fn_tx);\n");
+            try buf.appendSlice(allocator, "    }\n\n");
+        }
 
         // Generate validate method from SQL constraints
         try buf.print(allocator, "    pub fn validate{s}(entity: model.{s}) !void {{\n", .{ model_name, model_name });
@@ -1790,7 +1803,7 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
     try writeFileGen(io, persistence_path, persistence_code, opts);
 
     if (!opts.data_only) {
-        const service_code = try generateModuleService(allocator, module_name, tables, strip_prefix_len, opts.enable_events);
+        const service_code = try generateModuleService(allocator, module_name, tables, strip_prefix_len, opts.enable_events, opts.with_transactions);
         defer allocator.free(service_code);
         const service_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{module_dir});
         defer allocator.free(service_path);
@@ -2593,6 +2606,9 @@ const ScaffoldOpts = struct {
     with_metrics: bool = false,
     with_auth: bool = false,
     json_style: JsonStyle = .snake,
+    with_transactions: bool = false,
+    with_redis: bool = false,
+    with_websocket: bool = false,
 };
 
 fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !ScaffoldOpts {
@@ -2610,6 +2626,9 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var with_metrics: bool = false;
     var with_auth: bool = false;
     var json_style: JsonStyle = .snake;
+    var with_transactions: bool = false;
+    var with_redis: bool = false;
+    var with_websocket: bool = false;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2641,6 +2660,12 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             with_metrics = true;
         } else if (std.mem.eql(u8, args[i], "--with-auth")) {
             with_auth = true;
+        } else if (std.mem.eql(u8, args[i], "--with-transactions")) {
+            with_transactions = true;
+        } else if (std.mem.eql(u8, args[i], "--with-redis")) {
+            with_redis = true;
+        } else if (std.mem.eql(u8, args[i], "--with-websocket")) {
+            with_websocket = true;
         } else if (std.mem.eql(u8, args[i], "--json-style")) {
             if (i + 1 >= args.len) return error.CliUsage;
             if (std.mem.eql(u8, args[i + 1], "camel")) json_style = .camel;
@@ -2672,6 +2697,9 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .with_metrics = with_metrics,
         .with_auth = with_auth,
         .json_style = json_style,
+        .with_transactions = with_transactions,
+        .with_redis = with_redis,
+        .with_websocket = with_websocket,
     };
 }
 
@@ -3078,6 +3106,41 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     const pmf_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{plugins_dir});
     defer allocator.free(pmf_path);
     try writeFileGen(io, pmf_path, "{\n  \"stubs\": []\n}\n", gen_opts);
+
+    if (sopts.with_redis) {
+        const rd_dir = try std.fmt.allocPrint(allocator, "{s}/redis", .{plugins_dir});
+        defer allocator.free(rd_dir);
+        try ensureDirGen(io, rd_dir, gen_opts);
+        const rd_path = try std.fmt.allocPrint(allocator, "{s}/stub.zig", .{rd_dir});
+        defer allocator.free(rd_path);
+        try writeFileGen(io, rd_path,
+            \\// Redis plugin — STUB | Priority: P2
+            \\// Implement: redis_client.zig with SET/GET/DEL/EXPIRE/PUBLISH/SUBSCRIBE
+            \\pub const RedisPlugin = struct {
+            \\    pub fn connect(host: []const u8, port: u16) !RedisPlugin { _ = host; _ = port; return error.NotImplemented; }
+            \\    pub fn set(key: []const u8, value: []const u8, ttl_sec: u64) !void { _ = key; _ = value; _ = ttl_sec; return error.NotImplemented; }
+            \\    pub fn get(key: []const u8) !?[]const u8 { _ = key; return error.NotImplemented; }
+            \\    pub fn del(key: []const u8) !void { _ = key; return error.NotImplemented; }
+            \\};
+        , gen_opts);
+    }
+    if (sopts.with_websocket) {
+        const ws_dir = try std.fmt.allocPrint(allocator, "{s}/websocket", .{plugins_dir});
+        defer allocator.free(ws_dir);
+        try ensureDirGen(io, ws_dir, gen_opts);
+        const ws_path = try std.fmt.allocPrint(allocator, "{s}/stub.zig", .{ws_dir});
+        defer allocator.free(ws_path);
+        try writeFileGen(io, ws_path,
+            \\// WebSocket plugin — STUB | Priority: P3
+            \\// Implement: upgrade HTTP to WS, handle text/binary frames, broadcast
+            \\pub const WebSocketPlugin = struct {
+            \\    pub fn upgrade(ctx: anytype) !WebSocketPlugin { _ = ctx; return error.NotImplemented; }
+            \\    pub fn sendText(msg: []const u8) !void { _ = msg; return error.NotImplemented; }
+            \\    pub fn recvText() ![]const u8 { return error.NotImplemented; }
+            \\    pub fn broadcast(msg: []const u8) !void { _ = msg; return error.NotImplemented; }
+            \\};
+        , gen_opts);
+    }
 
     // 13. Generate .claude/skills/ — Claude Code agent skills
     try generateClaudeSkills(io, allocator, project_dir, gen_opts);
