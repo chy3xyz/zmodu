@@ -1549,7 +1549,7 @@ fn generateModulePersistence(allocator: std.mem.Allocator, module_name: []const 
     return buf.toOwnedSlice(allocator);
 }
 
-fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize) ![]const u8 {
+fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize, enable_events: bool) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
@@ -1557,7 +1557,20 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
     defer allocator.free(pascal_module);
     const header = try orm_tpl.expandOrm(allocator, orm_tpl.sqlx_service_header, module_name, pascal_module);
     defer allocator.free(header);
-    try buf.appendSlice(allocator, header);
+    if (enable_events) {
+        try buf.appendSlice(allocator, header);
+    } else {
+        // Strip EventBus lines from header: event type + EventBus field + withEvents + publish
+        var it = std.mem.splitScalar(u8, header, '\n');
+        while (it.next()) |line| {
+            if (std.mem.indexOf(u8, line, "EventBus") != null or
+                std.mem.indexOf(u8, line, "Event") != null or
+                std.mem.indexOf(u8, line, "publish") != null or
+                std.mem.indexOf(u8, line, "withEvents") != null) continue;
+            try buf.appendSlice(allocator, line);
+            try buf.appendSlice(allocator, "\n");
+        }
+    }
 
     for (tables) |table| {
         const effective_name = if (strip_prefix_len > 0 and strip_prefix_len < table.name.len)
@@ -1632,6 +1645,21 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
     return buf.toOwnedSlice(allocator);
 }
 
+fn pluralizeRoute(allocator: std.mem.Allocator, singular: []const u8) ![]const u8 {
+    if (singular.len == 0) return try allocator.dupe(u8, singular);
+    const last = singular[singular.len - 1];
+    if (last == 's' or last == 'x' or last == 'z') return try std.fmt.allocPrint(allocator, "{s}es", .{singular});
+    if (std.mem.endsWith(u8, singular, "ch") or std.mem.endsWith(u8, singular, "sh")) return try std.fmt.allocPrint(allocator, "{s}es", .{singular});
+    if (last == 'y' and singular.len > 1) {
+        const prev = singular[singular.len - 2];
+        if (prev != 'a' and prev != 'e' and prev != 'i' and prev != 'o' and prev != 'u') {
+            const stem = singular[0..singular.len-1];
+            return try std.fmt.allocPrint(allocator, "{s}ies", .{stem});
+        }
+    }
+    return try std.fmt.allocPrint(allocator, "{s}s", .{singular});
+}
+
 fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
@@ -1651,12 +1679,14 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         defer allocator.free(model_name);
         const snake_name = try toSnakeCase(allocator, effective_name);
         defer allocator.free(snake_name);
+        const plural_name = try pluralizeRoute(allocator, snake_name);
+        defer allocator.free(plural_name);
 
-        try buf.print(allocator, "        try group.get(\"/{s}s\", list{s}s, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
-        try buf.print(allocator, "        try group.get(\"/{s}s/:id\", get{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
-        try buf.print(allocator, "        try group.post(\"/{s}s\", create{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
-        try buf.print(allocator, "        try group.put(\"/{s}s/:id\", update{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
-        try buf.print(allocator, "        try group.delete(\"/{s}s/:id\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ snake_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}\", list{s}s, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}/:id\", get{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.post(\"/{s}\", create{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.put(\"/{s}/:id\", update{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.delete(\"/{s}/:id\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
     }
     try buf.appendSlice(allocator, "    }\n\n");
 
@@ -1768,7 +1798,7 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
     try writeFileGen(io, persistence_path, persistence_code, opts);
 
     if (!opts.data_only) {
-        const service_code = try generateModuleService(allocator, module_name, tables, strip_prefix_len);
+        const service_code = try generateModuleService(allocator, module_name, tables, strip_prefix_len, opts.enable_events);
         defer allocator.free(service_code);
         const service_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{module_dir});
         defer allocator.free(service_path);
