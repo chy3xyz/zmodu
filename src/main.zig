@@ -1621,8 +1621,15 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
 
         // Generate validate method from SQL constraints
         try buf.print(allocator, "    pub fn validate{s}(entity: model.{s}) !void {{\n", .{ model_name, model_name });
-        try buf.appendSlice(allocator, "        _ = entity;\n");
-
+        var has_rules = false;
+        for (table.columns) |col| {
+            if (col.col_type == .unknown and col.name.len == 0) continue;
+            if (!col.nullable and col.col_type == .string) {
+                try buf.print(allocator, "        if (entity.{s}.len == 0) return error.ValidationFailed;\n", .{col.name});
+                has_rules = true;
+            }
+        }
+        if (!has_rules) try buf.appendSlice(allocator, "        _ = entity;\n");
         try buf.appendSlice(allocator, "    }\n\n");
     }
 
