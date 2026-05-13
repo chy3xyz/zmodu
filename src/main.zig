@@ -912,6 +912,19 @@ fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]c
         \\JWT_SECRET=        # auth secret (with --with-auth)
         \\```
         \\
+        \\## AI Edit Rules — First Principle
+        \\
+        \\zmodu generates everything possible. AI only writes what zmodu cannot.
+        \\
+        \\### Safe to edit (survives regeneration):
+        \\`service_ext.zig` `api_ext.zig` `src/business/` `src/compat/` `tests/`
+        \\
+        \\### NEVER edit (overwritten on regeneration):
+        \\`model.zig` `persistence.zig` `service.zig` `api.zig` `module.zig` `root.zig` `main.zig` `build.zig`
+        \\
+        \\### Verify after every change:
+        \\```zig build && zig build test```
+        \\
         \\## Key Framework Types
         \\| Type | Path | Use |
         \\|------|------|-----|
@@ -2898,12 +2911,72 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
     defer allocator.free(skills_dir);
     try ensureDirGen(io, skills_dir, gen_opts);
 
-    const skill_dirs = [_][]const u8{ "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm", "zigmodu-analyze", "zigmodu-translate", "zigmodu-harness" };
+    const skill_dirs = [_][]const u8{ "zigmodu-build", "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm", "zigmodu-analyze", "zigmodu-translate", "zigmodu-harness" };
     for (skill_dirs) |sd| {
         const d = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ skills_dir, sd });
         defer allocator.free(d);
         try ensureDirGen(io, d, gen_opts);
     }
+
+    // zigmodu-build (master skill — always start here)
+    const sb = try std.fmt.allocPrint(allocator, "{s}/zigmodu-build/SKILL.md", .{skills_dir});
+    defer allocator.free(sb);
+    try writeFileGen(io, sb,
+        \\---
+        \\name: zigmodu-build
+        \\description: Build complete ZigModu backend — greenfield/SQL/migration. zmodu generates all possible code, AI fills only gaps. Always start here.
+        \\---
+        \\
+        \\# ZigModu Build — First Principle
+        \\
+        \\**zmodu generates everything possible. AI only writes what zmodu cannot.**
+        \\
+        \\## Mode Selection
+        \\```
+        \\Have SQL schema? → Mode 2 (Brownfield)
+        \\Have reference project (Java/PHP/Go/Rust)? → Mode 3 (Migration)
+        \\Neither? → Mode 1 (Greenfield)
+        \\```
+        \\
+        \\## Mode 1: Greenfield (from requirements)
+        \\```bash
+        \\# 1. Design schema → schema.sql (AI assists)
+        \\# 2. zmodu generates full project
+        \\zmodu scaffold --sql schema.sql --name <project> --with-events --with-resilience --with-metrics
+        \\# 3. Verify: zig build (must be 0 errors)
+        \\# 4. AI fills: service_ext.zig + api_ext.zig only. Never edit generated files.
+        \\```
+        \\
+        \\## Mode 2: Brownfield (from SQL)
+        \\```bash
+        \\# 1. Verify SQL: grep "CREATE TABLE\|FOREIGN KEY" schema.sql
+        \\# 2. zmodu generates full project
+        \\zmodu scaffold --sql schema.sql --name <project> --with-events --with-auth
+        \\# 3. Verify: zig build
+        \\# 4. AI adds: JOIN queries, business rules, auth logic
+        \\```
+        \\
+        \\## Mode 3: Migration (from Java/PHP/Go/Rust)
+        \\```bash
+        \\# 1. Analyze source → extract SQL + routes
+        \\# 2. zmodu generates from extracted SQL
+        \\zmodu scaffold --sql schema.sql --name <project>
+        \\# 3. AI translates: service logic diff, custom endpoints
+        \\# 4. Verify: zmodu verify --old :8080 --new :8081
+        \\```
+        \\
+        \\## AI Edit Rules
+        \\### Safe to edit (survives regeneration):
+        \\`service_ext.zig` `api_ext.zig` `src/business/` `src/compat/` `tests/`
+        \\### NEVER edit (overwritten on regeneration):
+        \\`model.zig` `persistence.zig` `service.zig` `api.zig` `module.zig` `root.zig` `main.zig` `build.zig`
+        \\
+        \\## Verify after every change
+        \\```bash
+        \\zig build && zig build test
+        \\```
+        \\
+    , gen_opts);
 
     // zigmodu-project
     const sp = try std.fmt.allocPrint(allocator, "{s}/zigmodu-project/SKILL.md", .{skills_dir});
