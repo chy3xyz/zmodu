@@ -15,6 +15,7 @@ const Command = enum {
     health,
     config,
     @"test",
+    plugin,
     help,
     version,
 };
@@ -188,6 +189,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .health => try cmdHealth(io, allocator, cmd_args),
         .config => try cmdConfig(io, allocator, cmd_args),
         .@"test" => try cmdTest(io, allocator, cmd_args),
+        .plugin => try cmdPlugin(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -292,6 +294,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "health")) return .health;
     if (std.mem.eql(u8, cmd, "config")) return .config;
     if (std.mem.eql(u8, cmd, "test")) return .@"test";
+    if (std.mem.eql(u8, cmd, "plugin")) return .plugin;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -320,6 +323,7 @@ fn printUsage() void {
         \\  health          Generate health check endpoint boilerplate
         \\  config          Generate ExternalizedConfig validator boilerplate
         \\  test <module>   Generate integration test scaffolding
+        \\  plugin         List/manage stub plugins (migration gap filler)
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -388,6 +392,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     const dirs = [_][]const u8{
         "src",
         "src/modules",
+        "src/plugins",
         "tests",
     };
 
@@ -2045,6 +2050,22 @@ fn cmdOrm(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
 
 // ── migration: generate Flyway-style migration file ─────────────────
 
+fn cmdPlugin(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = io;
+    _ = allocator;
+    if (args.len == 0 or std.mem.eql(u8, args[0], "list")) {
+        std.log.info("installed plugins:", .{});
+        std.log.info("  wechat-pay (P0) — WeChat Pay SDK stub", .{});
+        std.log.info("  aliyun-oss (P1) — Alibaba Cloud OSS stub", .{});
+        std.log.info("  apns (P1) — Apple Push Notification stub", .{});
+        std.log.info("", .{});
+        std.log.info("usage: zmodu plugin stub --name <name> --methods a,b,c --priority P0|P1|P2", .{});
+        return;
+    }
+    std.log.err("unknown plugin command: {s}", .{args[0]});
+    return error.CliUsage;
+}
+
 fn cmdMigration(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len == 0) {
         std.log.err("usage: zmodu migration <description> [--dir <dir>]", .{});
@@ -2911,6 +2932,14 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     // 12b. Generate .life/ — project digital life system
     try generateLifeDir(io, allocator, project_dir, sopts.project_name, tables.len, module_names.items.len, gen_opts);
 
+    // 12c. Generate src/plugins/ — stub plugin directory + manifest
+    const plugins_dir = try std.fmt.allocPrint(allocator, "{s}/src/plugins", .{project_dir});
+    defer allocator.free(plugins_dir);
+    try ensureDirGen(io, plugins_dir, gen_opts);
+    const pmf_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{plugins_dir});
+    defer allocator.free(pmf_path);
+    try writeFileGen(io, pmf_path, "{\n  \"stubs\": []\n}\n", gen_opts);
+
     // 13. Generate .claude/skills/ — Claude Code agent skills
     try generateClaudeSkills(io, allocator, project_dir, gen_opts);
 
@@ -3031,7 +3060,7 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
     defer allocator.free(skills_dir);
     try ensureDirGen(io, skills_dir, gen_opts);
 
-    const skill_dirs = [_][]const u8{ "zigmodu-build", "zigmodu-life", "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm", "zigmodu-analyze", "zigmodu-translate", "zigmodu-harness" };
+    const skill_dirs = [_][]const u8{ "zigmodu-build", "zigmodu-life", "zigmodu-project", "zigmodu-module", "zigmodu-api", "zigmodu-orm", "zigmodu-analyze", "zigmodu-translate", "zigmodu-harness", "zigmodu-plugin" };
     for (skill_dirs) |sd| {
         const d = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ skills_dir, sd });
         defer allocator.free(d);
@@ -3432,6 +3461,48 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\- Payment endpoint returns different amounts
         \\- Auth accepts invalid tokens
         \\- Memory leak (RSS grows unbounded)
+        \\
+    , gen_opts);
+
+    // zigmodu-plugin
+    const spl = try std.fmt.allocPrint(allocator, "{s}/zigmodu-plugin/SKILL.md", .{skills_dir});
+    defer allocator.free(spl);
+    try writeFileGen(io, spl,
+        \\---
+        \\name: zigmodu-plugin
+        \\description: Generate stub plugins for missing Zig dependencies. Creates compilable placeholder modules with error.NotImplemented markers.
+        \\---
+        \\
+        \\# Plugin Stub System
+        \\
+        \\## Principle
+        \\When migrating, dependencies without Zig equivalent get a stub.
+        \\Stub compiles, returns error.NotImplemented. AI fills later.
+        \\
+        \\## Stub Convention
+        \\```zig
+        \\// src/plugins/<name>/stub.zig
+        \\// Priority: P0|P1|P2 (P0=core, P1=important, P2=nice)
+        \\// Status: STUB
+        \\pub const Plugin = struct {{
+        \\    pub fn method(...) !ReturnType {{
+        \\        _ = ...;
+        \\        return error.NotImplemented;
+        \\    }}
+        \\}};
+        \\```
+        \\
+        \\## Priority
+        \\P0 (blocks business): 支付, 短信, 推送, 认证
+        \\P1 (blocks features): 文件存储, 搜索, 报表
+        \\P2 (nice to have): 日志聚合, 配置中心
+        \\
+        \\## Commands
+        \\```bash
+        \\zmodu plugin list                    # list stubs by priority
+        \\zmodu plugin stub --name x --methods a,b --priority P0
+        \\zmodu plugin done --name x          # mark implemented
+        \\```
         \\
     , gen_opts);
 }
