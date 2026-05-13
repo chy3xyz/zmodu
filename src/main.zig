@@ -511,7 +511,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         \\    const page = std.fmt.parseInt(usize, ctx.query.get("page") orelse "0", 10) catch 0;
         \\    const size = std.fmt.parseInt(usize, ctx.query.get("size") orelse "10", 10) catch 10;
         \\    const result = try s.service.listThings(page, size);
-        \\    try http.RenderExt.page(result.items, result.total, page, size);
+        \\    try ctx.jsonStruct(200, result);
         \\}
         \\```
         \\
@@ -920,7 +920,7 @@ fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]c
         \\fn listHandler(ctx: *http.Context) !void {
         \\    const s = resolve(ctx);
         \\    const result = try s.service.listThings(page, size);
-        \\    try http.RenderExt.page(result.items, result.total, page, size);
+        \\    try ctx.jsonStruct(200, result);
         \\}
         \\```
         \\
@@ -1473,6 +1473,25 @@ fn groupTablesByModule(allocator: std.mem.Allocator, tables: []const TableDef) !
         try gop.value_ptr.append(allocator, table);
     }
 
+    // Post-process: merge singular/plural splits (order + orders → order)
+    var merges = std.ArrayList(struct { from: []const u8, to: []const u8 }).init(allocator);
+    defer merges.deinit(allocator);
+    var kit = module_map.keyIterator();
+    while (kit.next()) |k| {
+        const key = k.*;
+        if (key.len > 1 and key[key.len-1] == 's') {
+            const singular = key[0..key.len-1];
+            if (module_map.get(singular)) |_| try merges.append(allocator, .{ .from = key, .to = singular });
+        }
+    }
+    for (merges.items) |m| {
+        if (module_map.get(m.from)) |src_tables| {
+            var target = module_map.getPtr(m.to).?;
+            for (src_tables.items) |t| { try target.append(allocator, t); }
+            _ = module_map.remove(m.from);
+        }
+    }
+
     return module_map;
 }
 
@@ -1555,22 +1574,10 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
 
     const pascal_module = try toPascalCase(allocator, module_name);
     defer allocator.free(pascal_module);
-    const header = try orm_tpl.expandOrm(allocator, orm_tpl.sqlx_service_header, module_name, pascal_module);
+    const header_tpl = if (enable_events) orm_tpl.sqlx_service_header else orm_tpl.sqlx_service_header_noev;
+    const header = try orm_tpl.expandOrm(allocator, header_tpl, module_name, pascal_module);
     defer allocator.free(header);
-    if (enable_events) {
-        try buf.appendSlice(allocator, header);
-    } else {
-        // Strip EventBus lines from header: event type + EventBus field + withEvents + publish
-        var it = std.mem.splitScalar(u8, header, '\n');
-        while (it.next()) |line| {
-            if (std.mem.indexOf(u8, line, "EventBus") != null or
-                std.mem.indexOf(u8, line, "Event") != null or
-                std.mem.indexOf(u8, line, "publish") != null or
-                std.mem.indexOf(u8, line, "withEvents") != null) continue;
-            try buf.appendSlice(allocator, line);
-            try buf.appendSlice(allocator, "\n");
-        }
-    }
+    try buf.appendSlice(allocator, header);
 
     for (tables) |table| {
         const effective_name = if (strip_prefix_len > 0 and strip_prefix_len < table.name.len)
@@ -1611,33 +1618,8 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
 
         // Generate validate method from SQL constraints
         try buf.print(allocator, "    pub fn validate{s}(entity: model.{s}) !void {{\n", .{ model_name, model_name });
-        try buf.appendSlice(allocator, "        var v = zigmodu.Validator.init(std.heap.page_allocator);\n");
-        try buf.appendSlice(allocator, "        defer v.deinit();\n");
-        var has_rules = false;
-        for (table.columns) |col| {
-            if (col.col_type == .unknown and col.name.len == 0) continue;
-            if (!col.nullable) {
-                // NOT NULL columns need required check
-                if (col.col_type == .string) {
-                    try buf.print(allocator, "        try v.required(\"{s}\", entity.{s});\n", .{ col.name, col.name });
-                    has_rules = true;
-                }
-            }
-            if (col.col_type == .string) {
-                // Check for VARCHAR(n) from original column definition
-                // We approximate: if column was defined with length, add maxLen
-                // For now: add maxLen for common fields
-                if (std.mem.startsWith(u8, col.name, "remark") or std.mem.eql(u8, col.name, "description") or std.mem.eql(u8, col.name, "comment")) {
-                    try buf.print(allocator, "        try v.maxLen(\"{s}\", entity.{s}, 500);\n", .{ col.name, col.name });
-                    has_rules = true;
-                }
-            }
-        }
-        if (has_rules) {
-            try buf.appendSlice(allocator, "        if (v.hasErrors()) return error.ValidationFailed;\n");
-        } else {
-            try buf.appendSlice(allocator, "        _ = v;\n");
-        }
+        try buf.appendSlice(allocator, "        _ = entity;\n");
+
         try buf.appendSlice(allocator, "    }\n\n");
     }
 
@@ -1704,7 +1686,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const page = ctx.queryInt(usize, \"page\", 0);\n");
         try buf.appendSlice(allocator, "        const size = ctx.queryInt(usize, \"size\", 10);\n");
         try buf.print(allocator, "        const result = try s.service.list{s}s(page, size);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try http.RenderExt.page(result.items, result.total, page, size);\n");
+        try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // get
@@ -1712,7 +1694,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try http.RenderExt.success(entity);\n");
+        try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
         try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
@@ -1721,10 +1703,10 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
-        try buf.print(allocator, "        s.service.validate{s}(entity) catch |e| {{\n", .{model_name});
+        try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try http.RenderExt.success(created);\n");
+        try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // update
@@ -1732,7 +1714,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
-        try buf.print(allocator, "        s.service.validate{s}(entity) catch |e| {{\n", .{model_name});
+        try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
         try buf.appendSlice(allocator, "        try http.RenderExt.success(\"ok\");\n");
@@ -2978,17 +2960,11 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(biz_dir);
     try ensureDirGen(io, biz_dir, gen_opts);
 
-    // Generate business/root.zig with real module stubs
+    // Generate business/root.zig — placeholder, add your cross-module logic here
     var biz_root_buf: std.ArrayList(u8) = .empty;
     defer biz_root_buf.deinit(allocator);
-    try biz_root_buf.appendSlice(allocator, "// Business logic modules — add your domain logic here.\n");
-    try biz_root_buf.appendSlice(allocator, "pub const enums = @import(\"enums.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const commission = @import(\"commission.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const agent = @import(\"agent.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const referral = @import(\"referral.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const order_flow = @import(\"order_flow.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const points = @import(\"points.zig\");\n");
-    try biz_root_buf.appendSlice(allocator, "pub const coupon = @import(\"coupon.zig\");\n");
+    try biz_root_buf.appendSlice(allocator, "// Cross-module business logic — add your domain logic here.\n");
+    try biz_root_buf.appendSlice(allocator, "// Example: pub const order_flow = @import(\"order_flow.zig\");\n");
     const biz_root = try biz_root_buf.toOwnedSlice(allocator);
     defer allocator.free(biz_root);
     const biz_root_path = try std.fmt.allocPrint(allocator, "{s}/root.zig", .{biz_dir});
@@ -3695,6 +3671,8 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         \\    var server = zigmodu.http.Server.initWithConfig(init.io, allocator, .{ .port = http_port });
         \\    defer server.deinit();
         \\    server.withGracefulDrain(zigmodu.getInFlightCounter());
+        \\    // CORS (allow all origins in dev)
+        \\    server.addMiddleware(zigmodu.http.http_middleware.cors(.{}));
         \\
         \\    // -- Health Checks --
         \\    var health_endpoint = zigmodu.HealthEndpoint.init(allocator);
