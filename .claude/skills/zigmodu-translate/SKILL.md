@@ -1,294 +1,220 @@
 ---
 name: zigmodu-translate
-description: Translate Java/PHP business logic to ZigModu Zig code. Use when converting service classes, controllers, middleware, or domain logic from legacy backends.
-allowed-tools: Read, Write, Edit, Bash, Grep, Glob
+description: Translate Java/PHP/Go/Rust logic to ZigModu. Input: source file path. Output: _ext.zig file with [AUTO]/[REVIEW]/[MANUAL] tags. Never edits generated files.
+allowed-tools: Read, Write, Bash, Grep, Glob
 ---
 
-# Translate Legacy Code → ZigModu
+# Translate Business Logic → ZigModu _ext Files
 
-## Phase 3 of Migration Harness
+## AI Contract
 
-Purpose: Convert business logic from Java/PHP to idiomatic Zig with confidence tagging.
+**Input**: path to Java/PHP/Go/Rust source file
+**Output**: `src/modules/<name>/service_ext.zig` or `src/modules/<name>/api_ext.zig`
+**Rule**: output file path follows module-map.json mapping. See zigmodu-analyze.
 
-## Translation Confidence Tags
+## Translation Decision Tree
 
-Always mark each translation block:
+For each method in source file:
 
 ```
-[AUTO]    Direct mechanical translation, no review needed
-[REVIEW]  Business logic preserved, needs human confirmation
-[MANUAL]  Complex logic, framework-specific, must rewrite manually
+Method is pure CRUD delegation?
+  ├─ YES → SKIP. zmodu already generated this.
+  └─ NO  → Contains business rules?
+            ├─ Simple (if/else, validation, single-table) → [AUTO] translate
+            ├─ Medium (multi-table, calculation, state machine) → [REVIEW] translate + note
+            └─ Complex (@Transactional + external API + compensation) → [MANUAL] skeleton only
 ```
 
-## Type Mapping
+## Type Mapping Table
 
-### Java → Zig
-```
-String, varchar, text      → []const u8
-int, Integer, long, Long   → i64
-double, Double, BigDecimal → f64
-boolean, Boolean           → bool
-Date, LocalDateTime        → []const u8 (ISO 8601)
-Optional<T>                → ?T
-List<T>, ArrayList<T>      → []T
-Map<K,V>, HashMap<K,V>     → std.StringHashMap(V)
-Set<T>, HashSet<T>         → std.AutoHashMap(T, void)
-CompletableFuture<T>       → EventBus publish/subscribe
-Stream<T>                  → []T (materialize)
-```
+AI uses this exact mapping. No deviation.
 
-### PHP → Zig
 ```
-string              → []const u8
-int                 → i64
-float               → f64
-bool                → bool
-?Type / null        → ?Type
-array               → []T  or  std.StringHashMap(V)
-Collection          → []T
-Carbon/DateTime     → []const u8
+Java                         →  Zig
+────────────────────────────────────────────
+String                       →  []const u8
+int, Integer                 →  i32
+long, Long                   →  i64
+double, Double, BigDecimal   →  f64
+boolean, Boolean             →  bool
+Date, LocalDateTime, Instant →  []const u8 (ISO 8601 string)
+Optional<T>                  →  ?T
+List<T>, ArrayList<T>        →  []T (allocator required for mutable)
+Map<K,V>, HashMap<K,V>       →  std.StringHashMap(V) (keys always []const u8)
+Set<T>, HashSet<T>           →  std.AutoHashMap(T, void)
+CompletableFuture<T>         →  EventBus publish/subscribe pattern
+Stream<T>                    →  []T (materialize to slice first)
+Page<T> (Spring Data)        →  data.orm.PageResult(T) (zmodu generated)
+ResponseEntity<T>            →  ctx.jsonStruct(status, value)
 ```
 
-## Pattern Translation
+```
+PHP               →  Zig
+───────────────────────────
+string            →  []const u8
+int               →  i64
+float             →  f64
+bool              →  bool
+?Type / null      →  ?Type
+array             →  []T  or  std.StringHashMap(V)
+Collection        →  []T
+Carbon\Carbon     →  []const u8
+```
 
-### [AUTO] Simple CRUD Service
+```
+Go                →  Zig
+───────────────────────────
+string            →  []const u8
+int, int64        →  i64
+float64           →  f64
+bool              →  bool
+*Type / nil       →  ?T
+[]Type            →  []T
+map[string]Type   →  std.StringHashMap(Type)
+time.Time         →  []const u8
+error             →  !T (error union)
+```
 
+## Pattern Translation (Fixed Rules)
+
+### @Transactional → repo.transact()
 ```java
-// Spring Boot
-@Service
-public class OrderService {
-    @Autowired
-    private OrderRepository repo;
+// SOURCE
+@Transactional
+public Order createOrder(OrderRequest req) {
+    Order order = orderRepo.save(...);
+    paymentService.charge(...);
+    return order;
+}
+```
+```zig
+// TARGET: service_ext.zig
+// [MANUAL] @Transactional with external payment — use SagaOrchestrator
+pub fn createOrder(self: *OrderService, req: OrderRequest) !model.Order {
+    // Multi-step with compensation. See zigmodu.SagaOrchestrator.
+    @compileError("MANUAL: implement with Saga pattern");
+}
+```
 
-    public Page<Order> listOrders(int page, int size) {
-        return repo.findAll(PageRequest.of(page, size));
+### @Cacheable → CacheManager
+```java
+// SOURCE
+@Cacheable(value = "products", key = "#id")
+public Product getProduct(Long id) { ... }
+```
+```zig
+// TARGET
+pub fn getProduct(self: *ProductService, cache: *zigmodu.data.CacheManager, id: i64) !?model.Product {
+    const key = try std.fmt.allocPrint(self.allocator, "products:{}", .{id});
+    defer self.allocator.free(key);
+    if (cache.get(key)) |cached| return parseProduct(cached); // [AUTO]
+    const result = try self.persistence.productRepo().findById(id);
+    if (result) |p| {
+        const json = try std.json.stringifyAlloc(self.allocator, p, .{});
+        defer self.allocator.free(json);
+        try cache.set(key, json, 300); // TTL 5min
     }
+    return result;
+}
+```
 
-    public Optional<Order> getOrder(Long id) {
-        return repo.findById(id);
-    }
-
-    public Order createOrder(Order order) {
-        return repo.save(order);
+### @Async / CompletableFuture → EventBus
+```java
+// SOURCE
+@Async
+public CompletableFuture<Void> sendEmail(Email email) { ... }
+```
+```zig
+// TARGET
+// [AUTO] Async → EventBus
+pub fn onOrderCreated(self: *EmailService, event: order.OrderEvent) void {
+    if (event == .order_created) {
+        // self.sendEmail(event.order_created.id);
+        // triggered by EventBus, no return value needed
     }
 }
 ```
 
-→
+### Validation Annotations → explicit checks
+```java
+// SOURCE
+@NotNull @Size(min=1, max=100) private String name;
+@Min(0) private int quantity;
+```
+```zig
+// TARGET: place in service_ext.zig create method
+pub fn validateOrder(self: *OrderService, req: OrderRequest) !void {
+    if (req.name.len == 0 or req.name.len > 100) return error.InvalidName;
+    if (req.quantity < 0) return error.InvalidQuantity;
+}
+```
+
+### Exception → Error Union
+```java
+// SOURCE
+throw new BusinessException("Product not found");
+throw new InsufficientStockException(prodId, requested, available);
+```
+```zig
+// TARGET
+return error.ProductNotFound;
+return error.InsufficientStock;
+// Define custom errors in module:
+pub const OrderError = error{ ProductNotFound, InsufficientStock, PaymentFailed };
+```
+
+## Output File Format
+
+Every `_ext.zig` file follows this structure:
 
 ```zig
-// ZigModu service.zig
-pub fn listOrders(self: *OrderService, page: usize, size: usize) !data.orm.PageResult(model.Order) {
-    var repo = self.persistence.orderRepo();
-    return try repo.findPage(page, size);
-}
+//! Custom business logic for <module> — survives zmodu regeneration.
+//! Source: <original file path>
+//! Translated: [AUTO] 3 methods, [REVIEW] 2 methods, [MANUAL] 1 method
 
-pub fn getOrder(self: *OrderService, id: i64) !?model.Order {
-    var repo = self.persistence.orderRepo();
-    return try repo.findById(id);
-}
+const std = @import("std");
+const zigmodu = @import("zigmodu");
+const service = @import("service.zig");
+const model = @import("model.zig");
 
-pub fn createOrder(self: *OrderService, entity: model.Order) !model.Order {
-    var repo = self.persistence.orderRepo();
-    return try repo.insert(entity);
-}
-// [AUTO] confidence: high
-```
+pub const OrderServiceExt = struct {
+    svc: *service.OrderService,
 
-### [REVIEW] Business Logic with Rules
-
-```java
-public Order placeOrder(OrderRequest req) {
-    // Validate stock
-    var product = productRepo.findById(req.getProductId())
-        .orElseThrow(() -> new BusinessException("Product not found"));
-    if (product.getStock() < req.getQuantity()) {
-        throw new BusinessException("Insufficient stock");
+    pub fn init(svc: *service.OrderService) OrderServiceExt {
+        return .{ .svc = svc };
     }
 
-    // Calculate price
-    var totalPrice = product.getPrice() * req.getQuantity();
-    if (req.getCouponCode() != null) {
-        var coupon = couponService.validateCoupon(req.getCouponCode());
-        totalPrice = totalPrice - coupon.getDiscount();
-    }
+    // ── [AUTO] ──
+    // methods automatically translated, no human review needed
 
-    // Create order
-    var order = new Order();
-    order.setProductId(req.getProductId());
-    order.setQuantity(req.getQuantity());
-    order.setTotalPrice(totalPrice);
-    order.setStatus(OrderStatus.PENDING);
+    // ── [REVIEW] ──
+    // methods translated, need human confirmation of business rules
 
-    // Deduct stock
-    product.setStock(product.getStock() - req.getQuantity());
-    productRepo.save(product);
-
-    // Publish event
-    eventPublisher.publishEvent(new OrderCreatedEvent(order));
-
-    return orderRepo.save(order);
-}
+    // ── [MANUAL] ──
+    // skeletons only, must be rewritten with Saga/EventBus patterns
+};
 ```
 
-→
+## Translation Checklist (AI runs per file)
 
-```zig
-pub fn placeOrder(self: *OrderService, req: PlaceOrderRequest) !model.Order {
-    // Validate stock
-    const product = (try self.productRepo().findById(req.product_id)) orelse
-        return error.ProductNotFound;
-    if (product.stock < req.quantity) return error.InsufficientStock;
+After translating each source file:
 
-    // Calculate price
-    var total_price = product.price * @as(f64, @floatFromInt(req.quantity));
-    if (req.coupon_code) |code| {
-        const coupon = try self.couponService.validateCoupon(code);
-        total_price -= coupon.discount;
-    }
-
-    // Create order
-    var order = model.Order{
-        .id = 0,
-        .product_id = req.product_id,
-        .quantity = req.quantity,
-        .total_price = total_price,
-        .status = "PENDING",
-    };
-    const created = try self.repo.insert(order);
-
-    // Deduct stock
-    var updated_product = product;
-    updated_product.stock -= req.quantity;
-    try self.productRepo().update(updated_product);
-
-    // Publish event
-    self.publish(.{ .order_created = .{ .id = created.id } });
-
-    return created;
-}
-// [REVIEW] business rules preserved, confirm stock concurrency, coupon edge cases
+```
+□ Count: total methods in source file
+□ Count: [AUTO] translated
+□ Count: [REVIEW] translated
+□ Count: [MANUAL] skeleton
+□ Verify: zig build passes
+□ Report: "X.java → service_ext.zig: 12 methods, 8 [AUTO], 3 [REVIEW], 1 [MANUAL]"
 ```
 
-### [MANUAL] Complex Transaction
+## Batch Translation Priority
 
-```java
-@Transactional(rollbackFor = Exception.class)
-public void processPayment(PaymentRequest req) {
-    // 1. Lock order
-    var order = orderRepo.findByIdForUpdate(req.getOrderId());
-    if (order.getStatus() != OrderStatus.PENDING) {
-        throw new BusinessException("Order not in pending state");
-    }
+Translate in this order (most impact first):
 
-    // 2. Call payment gateway
-    var paymentResult = paymentGateway.charge(req.getAmount(), req.getCardToken());
-
-    // 3. Update order status
-    order.setStatus(paymentResult.isSuccess() ?
-        OrderStatus.PAID : OrderStatus.PAYMENT_FAILED);
-    orderRepo.save(order);
-
-    // 4. Create payment record
-    var payment = new PaymentRecord();
-    payment.setOrderId(req.getOrderId());
-    payment.setTransactionId(paymentResult.getTransactionId());
-    payment.setAmount(req.getAmount());
-    payment.setStatus(paymentResult.isSuccess() ? "SUCCESS" : "FAILED");
-    paymentRepo.save(payment);
-
-    // 5. If success, trigger fulfillment
-    if (paymentResult.isSuccess()) {
-        fulfillmentService.createFulfillment(order);
-    }
-}
-```
-
-→
-
-```zig
-pub fn processPayment(self: *PaymentService, req: PaymentRequest) !void {
-    // [MANUAL] Requires transaction, external API call, multi-step compensation
-    // Use Saga pattern with compensation steps:
-    //
-    // try saga.execute("process-payment", &.{
-    //     .{ .action = lockOrder,       .compensate = unlockOrder },
-    //     .{ .action = chargeGateway,   .compensate = refundGateway },
-    //     .{ .action = updateOrder,     .compensate = revertOrder },
-    //     .{ .action = createRecord,    .compensate = voidRecord },
-    //     .{ .action = triggerFulfill,  .compensate = cancelFulfill },
-    // });
-}
-// [MANUAL] confidence: low — rewrite with SagaOrchestrator
-```
-
-## Translation Rules
-
-### 1. Exception → Error Union
-```java
-throw new BusinessException("msg")   → return error.BusinessError
-throw new NotFoundException("msg")   → return error.NotFound
-throw new ValidationException("msg") → return error.ValidationFailed
-```
-
-### 2. Dependency Injection → Explicit Wiring
-```java
-@Autowired private OrderRepository repo;
-@Autowired private CouponService couponService;
-```
-→
-```zig
-persistence: *persistence.OrderPersistence,
-couponService: *CouponService,  // passed via init()
-```
-
-### 3. Annotation → Struct Field / Module Config
-```java
-@Value("${app.max-order-items}")
-private int maxOrderItems;
-```
-→
-```zig
-const max_order_items: usize = 10; // from env config
-// OR load from ExternalizedConfig at startup
-```
-
-### 4. Logging
-```java
-log.info("Order {} created", order.getId());
-log.error("Payment failed", e);
-```
-→
-```zig
-std.log.info("Order {d} created", .{order.id});
-std.log.err("Payment failed: {s}", .{@errorName(err)});
-```
-
-## Batch Translation
-
-```bash
-# Translate all service files
-zmodu translate --batch \
-  --source src/main/java/com/example/service/ \
-  --output src/modules/ \
-  --mapping translation-map.json
-```
-
-`translation-map.json`:
-```json
-{
-  "OrderService.java": "src/modules/order/service.zig",
-  "UserService.java": "src/modules/user/service.zig",
-  "PaymentService.java": "src/modules/payment/service.zig",
-  "confidence_threshold": "REVIEW"
-}
-```
-
-Files below REVIEW confidence are skipped for manual handling.
-
-## Post-Translation Steps
-
-1. Run `zig build` to check compilation
-2. For [REVIEW] files: run `zig build test` with generated tests
-3. For [MANUAL] files: add to manual rewrite queue
-4. Re-run `zmodu harness verify` to compare with original backend
+1. Controllers with @GetMapping/@PostMapping → api_ext.zig (route differences)
+2. Services with @Transactional → service_ext.zig (business logic)
+3. Services with @Cacheable → service_ext.zig (caching layer)
+4. EventListeners → EventBus subscribers
+5. @Scheduled methods → cron module or separate scheduler
+6. Configuration classes → ExternalizedConfig
