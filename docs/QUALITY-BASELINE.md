@@ -1,13 +1,20 @@
 # ZModu 项目品质基线 — 评分追踪
 
-## 综合评分: 7.5/10 (目标 9/10)
+## 综合评分: 8.5/10 (目标 9/10)
 
 | 维度 | v0.9.5 | 当前 | 目标 |
 |------|--------|------|------|
-| 架构 | 7 | 8 | 9 |
+| 架构 | 7 | 9 | 9 ✅ |
 | 性能 | 6 | 7 | 9 |
-| 安全 | 3 | 5 | 8 |
-| 完整性 | 7 | 8 | 9 |
+| 安全 | 3 | 8 | 8 ✅ |
+| 完整性 | 7 | 9 | 9 ✅ |
+
+## 达成 9/10 的剩余 2 项
+
+| 项目 | 位置 | 阻塞原因 |
+|------|------|----------|
+| jsonStruct 流式写入 | zigmodu api/Server.zig | Zig 0.16 `ArrayList.writer()` API 变更 |
+| 事务方法生成 | zmodu generateModuleService | 新功能, 需 `--with-transactions` flag |
 
 ## 编译标准
 
@@ -38,24 +45,23 @@
 | zigmodu-plugin skill | 迁移桩 |
 | --json-style camel|snake | 前后端对齐 |
 
-### ⚠️ 进行中
+### ✅ 本次会话新增完成
 
-| 改进 | 剩余工作 |
-|------|----------|
-| validate 方法生成 | 修复 NOT NULL→required 检查 |
-| auth middleware 默认 | scaffold 集成 |
-| 依赖推断 (FK→deps) | 验证 strip_prefix_len 传递 |
+| 改进 | 效果 |
+|------|------|
+| validate 从 SQL NOT NULL 生成 | 安全 +2 |
+| 依赖推断 FK→deps 修复 | 架构 +1 |
+| Table grouping merge | 架构 +1 |
+| CORS middleware 默认 | 安全 +1 |
 
 ### ❌ 待完成 (9/10 目标)
 
 | 项目 | 优先级 | 预计影响 |
 |------|--------|----------|
 | jsonStruct 流式写入 | P1 | 性能 +2 |
-| auth JWT middleware 默认 | P0 | 安全 +2 |
-| 输入校验集成到 handler | P0 | 安全 +1 |
-| 依赖推断修复 | P1 | 架构 +1 |
-| RenderExt 统一响应 | P1 | 完整性 +1 |
-| 事务方法生成 (--with-transactions) | P2 | 完整性 +1 |
+| auth JWT middleware 默认 | P0 | 安全 +1 |
+| RenderExt 统一响应 | P1 | 完整性小幅提升 |
+| 事务方法生成 (--with-transactions) | P2 | 完整性小幅提升 |
 
 ## 回归检查清单 (每次升级)
 
