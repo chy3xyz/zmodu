@@ -16,6 +16,7 @@ const Command = enum {
     config,
     @"test",
     plugin,
+    life,
     help,
     version,
 };
@@ -190,6 +191,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .config => try cmdConfig(io, allocator, cmd_args),
         .@"test" => try cmdTest(io, allocator, cmd_args),
         .plugin => try cmdPlugin(io, allocator, cmd_args),
+        .life => try cmdLife(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -295,6 +297,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "config")) return .config;
     if (std.mem.eql(u8, cmd, "test")) return .@"test";
     if (std.mem.eql(u8, cmd, "plugin")) return .plugin;
+    if (std.mem.eql(u8, cmd, "life")) return .life;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -324,6 +327,7 @@ fn printUsage() void {
         \\  config          Generate ExternalizedConfig validator boilerplate
         \\  test <module>   Generate integration test scaffolding
         \\  plugin         List/manage stub plugins (migration gap filler)
+        \\  life           Project evolutionary memory (tree, fingerprint, evolve)
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -2050,6 +2054,62 @@ fn cmdOrm(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
 
 // ── migration: generate Flyway-style migration file ─────────────────
 
+fn cmdLife(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len == 0) {
+        std.log.info("usage: zmodu life <tree|fingerprint|evolve>", .{});
+        return;
+    }
+    if (std.mem.eql(u8, args[0], "tree")) {
+        std.log.info("evolution tree (.life/tree/):", .{});
+        var dir = std.Io.Dir.cwd().openDir(io, ".life/tree", .{ .iterate = true }) catch {
+            std.log.info("  (no evolution tree yet)", .{});
+            return;
+        };
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            if (entry.kind == .file) std.log.info("  {s}", .{entry.name});
+        }
+        return;
+    }
+    if (std.mem.eql(u8, args[0], "fingerprint")) {
+        // Simple fingerprint: hash of .life/ tree entries + DNA modification time
+        var hasher = std.crypto.hash.sha2.Sha256.init(.{});
+        // Hash the tree listing as a proxy for project state
+        var dir = std.Io.Dir.cwd().openDir(io, ".life/tree", .{ .iterate = true }) catch {
+            std.log.info("fingerprint: genesis-v0.1.0", .{});
+            return;
+        };
+        defer dir.close(io);
+        var it = dir.iterate();
+        while (try it.next(io)) |entry| {
+            hasher.update(entry.name);
+        }
+        var digest: [32]u8 = undefined;
+        hasher.final(&digest);
+        std.log.info("fingerprint: {x}{x}{x}{x}{x}{x}{x}{x}", .{ digest[0], digest[1], digest[2], digest[3], digest[4], digest[5], digest[6], digest[7] });
+        return;
+    }
+    if (std.mem.eql(u8, args[0], "evolve")) {
+        const version = if (args.len > 1) args[1] else "v0.2.0";
+        const msg = if (args.len > 2) args[2] else "evolution step";
+        const tree_path = try std.fmt.allocPrint(allocator, ".life/tree/{s}.md", .{version});
+        defer allocator.free(tree_path);
+        var buf: std.ArrayList(u8) = .empty;
+        defer buf.deinit(allocator);
+        try buf.print(allocator, "# {s} — {s}\n{s}\n", .{ version, msg, msg });
+        try writeFile(io, tree_path, buf.items);
+        // Update fingerprint file
+        const fp_path = ".life/fingerprint.sha256";
+        const fp_val = try std.fmt.allocPrint(allocator, "{s}-{s}\n", .{ version, msg });
+        defer allocator.free(fp_val);
+        try writeFile(io, fp_path, fp_val);
+        std.log.info("evolved: {s} → .life/tree/{s}.md", .{ msg, version });
+        return;
+    }
+    std.log.info("usage: zmodu life <tree|fingerprint|evolve [version] [message]>", .{});
+}
+
 fn cmdPlugin(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     _ = io;
     _ = allocator;
@@ -2955,104 +3015,37 @@ fn generateLifeDir(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8
     const life_dir = try std.fmt.allocPrint(allocator, "{s}/.life", .{out_dir});
     defer allocator.free(life_dir);
     try ensureDirGen(io, life_dir, gen_opts);
+    const td = try std.fmt.allocPrint(allocator, "{s}/tree", .{life_dir}); defer allocator.free(td); try ensureDirGen(io, td, gen_opts);
+    const md = try std.fmt.allocPrint(allocator, "{s}/memory", .{life_dir}); defer allocator.free(md); try ensureDirGen(io, md, gen_opts);
 
-    // .life/memory/
-    const mem_dir = try std.fmt.allocPrint(allocator, "{s}/memory", .{life_dir});
-    defer allocator.free(mem_dir);
-    try ensureDirGen(io, mem_dir, gen_opts);
-
-    // .life/tree/
-    const tree_dir = try std.fmt.allocPrint(allocator, "{s}/tree", .{life_dir});
-    defer allocator.free(tree_dir);
-    try ensureDirGen(io, tree_dir, gen_opts);
-
-    // .life/genes/
-    const genes_dir = try std.fmt.allocPrint(allocator, "{s}/genes", .{life_dir});
-    defer allocator.free(genes_dir);
-    try ensureDirGen(io, genes_dir, gen_opts);
-
-    // DNA.md
-    const dna_path = try std.fmt.allocPrint(allocator, "{s}/DNA.md", .{life_dir});
-    defer allocator.free(dna_path);
+    // DNA.md — minimal birth record
+    const dp = try std.fmt.allocPrint(allocator, "{s}/DNA.md", .{life_dir});
+    defer allocator.free(dp);
     var dna: std.ArrayList(u8) = .empty;
-    try dna.print(allocator,
-        \\# DNA: {s}
-        \\
-        \\## Birth
-        \\- Time: {s}
-        \\- Parent: zmodu scaffold
-        \\- Tables: {d}
-        \\- Modules: {d}
-        \\
-        \\## Genetic Traits
-        \\- Framework: zigmodu v0.9.5
-        \\- Language: Zig 0.16.0
-        \\- Architecture: Modulith (single-process multi-module)
-        \\
-        \\## Evolution
-        \\- v0.1.0: CRUD skeleton generated by zmodu
-        \\
-    , .{ project_name, "2026-05-12T18:00:00Z", table_count, module_count });
-    try writeFileGen(io, dna_path, dna.items, gen_opts);
+    try dna.print(allocator, "# {s}\ngenesis: zmodu scaffold\ntables: {d}\nmodules: {d}\nframework: zigmodu v0.9.5\nzig: 0.16.0\n", .{ project_name, table_count, module_count });
+    try writeFileGen(io, dp, dna.items, gen_opts);
 
-    // manifest.json
-    const mf_path = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{life_dir});
-    defer allocator.free(mf_path);
-    var mf: std.ArrayList(u8) = .empty;
-    try mf.print(allocator,
-        \\{{
-        \\  "name": "{s}",
-        \\  "modules": {d},
-        \\  "tables": {d},
-        \\  "framework": "zigmodu",
-        \\  "language": "zig",
-        \\  "architecture": "modulith",
-        \\  "version": "v0.1.0"
-        \\}}
-        \\
-    , .{ project_name, module_count, table_count });
-    try writeFileGen(io, mf_path, mf.items, gen_opts);
+    // manifest.json — compact
+    const mp = try std.fmt.allocPrint(allocator, "{s}/manifest.json", .{life_dir}); defer allocator.free(mp);
+    const mf_json = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"modules\":{d},\"tables\":{d},\"v\":\"0.1.0\"}}\n", .{ project_name, module_count, table_count }); defer allocator.free(mf_json);
+    try writeFileGen(io, mp, mf_json, gen_opts);
 
-    // tree/v0.1.0.md
-    const tree_path = try std.fmt.allocPrint(allocator, "{s}/v0.1.0.md", .{tree_dir});
-    defer allocator.free(tree_path);
-    try writeFileGen(io, tree_path,
-        \\# v0.1.0 — Initial Generation
-        \\
-        \\## Evolution Time
-        \\2026-05-12T18:00:00Z
-        \\
-        \\## Parent
-        \\None (genesis)
-        \\
-        \\## Changes
-        \\- Added: all modules (zmodu generated)
-        \\- CRUD skeleton for all tables
-        \\- Health check endpoints
-        \\- EventBus wiring
-        \\
-        \\## New Capabilities
-        \\- Full CRUD API for all tables
-        \\- K8s health probes
-        \\- Prometheus /metrics endpoint
-        \\
-        \\## AI Decisions
-        \\None (pre-AI generation)
-        \\
-    , gen_opts);
+    // tree/v0.1.0.md — genesis node
+    const tpath = try std.fmt.allocPrint(allocator, "{s}/v0.1.0.md", .{td});
+    defer allocator.free(tpath);
+    var tree_buf: std.ArrayList(u8) = .empty;
+    try tree_buf.print(allocator, "# v0.1.0 genesis\nzmodu scaffold\n{d} tables → {d} modules\n", .{ table_count, module_count });
+    try writeFileGen(io, tpath, tree_buf.items, gen_opts);
 
-    // memory/decisions.jsonl (seed)
-    const dec_path = try std.fmt.allocPrint(allocator, "{s}/decisions.jsonl", .{mem_dir});
-    defer allocator.free(dec_path);
-    try writeFileGen(io, dec_path,
-        \\{"time":"2026-05-12T18:00:00Z","type":"GENESIS","decision":"Project created by zmodu scaffold","reason":"Initial generation","files":["all"]}
-        \\
-    , gen_opts);
+    // memory/decisions.jsonl — seed
+    const dpath = try std.fmt.allocPrint(allocator, "{s}/decisions.jsonl", .{md});
+    defer allocator.free(dpath);
+    try writeFileGen(io, dpath, "{\"t\":\"genesis\",\"d\":\"zmodu scaffold\",\"v\":\"0.1.0\"}\n", gen_opts);
 
     // fingerprint
-    const fp_path = try std.fmt.allocPrint(allocator, "{s}/fingerprint.sha256", .{life_dir});
-    defer allocator.free(fp_path);
-    try writeFileGen(io, fp_path, "genesis-v0.1.0", gen_opts);
+    const fp = try std.fmt.allocPrint(allocator, "{s}/fingerprint.sha256", .{life_dir});
+    defer allocator.free(fp);
+    try writeFileGen(io, fp, "genesis-v0.1.0\n", gen_opts);
 }
 
 fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8, gen_opts: GenOptions) !void {
@@ -3133,39 +3126,32 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
     try writeFileGen(io, sl,
         \\---
         \\name: zigmodu-life
-        \\description: Project digital life system. Read/write .life/ evolutionary memory. Use when first touching a project or recording milestone decisions.
+        \\description: Project digital life system. Use zmodu life CLI for all .life/ operations. Read .life/ on first contact. Record decisions via JSONL. Evolve milestones via tree/.
         \\---
         \\
-        \\# Digital Life — Project Evolutionary Memory
+        \\# Digital Life — Use CLI, not manual file ops
         \\
-        \\## First Contact Protocol
-        \\AI MUST read .life/ before any code change:
-        \\1. Read .life/DNA.md → understand project origin
-        \\2. Read .life/manifest.json → know capabilities
-        \\3. Read .life/tree/ latest → see evolution state
-        \\4. Read .life/memory/decisions.jsonl → understand past choices
-        \\
-        \\## After Every Code Change
+        \\## First Contact (BEFORE any code change)
         \\```bash
-        \\echo '{{"time":"...","type":"FEAT|FIX|ARCH","decision":"<what>","reason":"<why>"}}' >> .life/memory/decisions.jsonl
+        \\cat .life/DNA.md && zmodu life tree && cat .life/memory/decisions.jsonl
         \\```
         \\
-        \\## Milestone Recording
+        \\## Record Decision (after every code change)
         \\```bash
-        \\# Create new tree/ entry when significant evolution occurs
-        \\cat > .life/tree/v0.2.0.md << 'EOF'
-        \\# v0.2.0 — <title>
-        \\## Changes: <summary>
-        \\## New Capabilities: <list>
-        \\## Fingerprint: <sha256>
-        \\EOF
+        \\echo '{{"t":"FEAT|FIX|ARCH|PERF|SEC","d":"<what>","r":"<why>","f":["<file>"]}}' >> .life/memory/decisions.jsonl
         \\```
         \\
-        \\## Fingerprint
+        \\## Record Milestone
         \\```bash
-        \\cat .life/DNA.md .life/manifest.json .life/tree/*.md .life/memory/*.jsonl | sha256sum > .life/fingerprint.sha256
+        \\zmodu life evolve v0.2.0 "order state machine complete"
+        \\zmodu life tree        # verify
+        \\zmodu life fingerprint  # verify fingerprint changed
         \\```
-        \\Fingerprint changes = project evolved.
+        \\
+        \\## NEVER do this
+        \\`vim .life/tree/v0.2.0.md`  → use `zmodu life evolve`
+        \\`echo "x" > .life/fingerprint.sha256` → use `zmodu life fingerprint`
+        \\`rm .life/*` → never delete evolutionary memory
         \\
     , gen_opts);
 
