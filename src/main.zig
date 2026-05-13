@@ -2782,7 +2782,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     // 4. Generate modules under src/modules/
     const modules_dir = try std.fmt.allocPrint(allocator, "{s}/src/modules", .{project_dir});
     defer allocator.free(modules_dir);
-    const gen_opts: GenOptions = .{ .dry_run = sopts.dry_run, .force = sopts.force, .json_style = sopts.json_style };
+    const gen_opts: GenOptions = .{ .dry_run = sopts.dry_run, .force = sopts.force, .json_style = sopts.json_style, .enable_events = sopts.with_events, .with_transactions = sopts.with_transactions };
 
     const scaffold_prefix_len = commonTablePrefix(tables);
 
@@ -3747,7 +3747,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         \\    defer server.deinit();
         \\    server.withGracefulDrain(zigmodu.getInFlightCounter());
         \\    // CORS (allow all origins in dev)
-        \\    server.addMiddleware(zigmodu.http.http_middleware.cors(.{}));
+        \\    try server.addMiddleware(zigmodu.http.http_middleware.cors(.{}));
         \\
         \\    // -- Health Checks --
         \\    var health_endpoint = zigmodu.HealthEndpoint.init(allocator);
