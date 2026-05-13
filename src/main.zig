@@ -511,7 +511,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         \\    const page = std.fmt.parseInt(usize, ctx.query.get("page") orelse "0", 10) catch 0;
         \\    const size = std.fmt.parseInt(usize, ctx.query.get("size") orelse "10", 10) catch 10;
         \\    const result = try s.service.listThings(page, size);
-        \\    try ctx.jsonStruct(200, result);
+        \\    try http.RenderExt.page(result.items, result.total, page, size);
         \\}
         \\```
         \\
@@ -920,7 +920,7 @@ fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]c
         \\fn listHandler(ctx: *http.Context) !void {
         \\    const s = resolve(ctx);
         \\    const result = try s.service.listThings(page, size);
-        \\    try ctx.jsonStruct(200, result);
+        \\    try http.RenderExt.page(result.items, result.total, page, size);
         \\}
         \\```
         \\
@@ -1643,7 +1643,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const page = ctx.queryInt(usize, \"page\", 0);\n");
         try buf.appendSlice(allocator, "        const size = ctx.queryInt(usize, \"size\", 10);\n");
         try buf.print(allocator, "        const result = try s.service.list{s}s(page, size);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
+        try buf.appendSlice(allocator, "        try http.RenderExt.page(result.items, result.total, page, size);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // get
@@ -1651,7 +1651,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
+        try buf.appendSlice(allocator, "            try http.RenderExt.success(entity);\n");
         try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
@@ -1661,7 +1661,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
+        try buf.appendSlice(allocator, "        try http.RenderExt.success(created);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // update
@@ -1670,7 +1670,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try ctx.json(200, \"{\\\"ok\\\":true}\");\n");
+        try buf.appendSlice(allocator, "        try http.RenderExt.success(\"ok\");\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // delete
