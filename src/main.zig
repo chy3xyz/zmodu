@@ -1473,24 +1473,27 @@ fn groupTablesByModule(allocator: std.mem.Allocator, tables: []const TableDef) !
         try gop.value_ptr.append(allocator, table);
     }
 
-    // Post-process: merge singular/plural splits (order + orders → order)
-    var merges = std.ArrayList(struct { from: []const u8, to: []const u8 }).init(allocator);
-    defer merges.deinit(allocator);
+    // Post-process: merge singular/plural splits (e.g. orders → order)
+    // Collect merge candidates first, then apply
+    var merge_keys = std.ArrayList([]const u8).empty;
     var kit = module_map.keyIterator();
     while (kit.next()) |k| {
         const key = k.*;
         if (key.len > 1 and key[key.len-1] == 's') {
             const singular = key[0..key.len-1];
-            if (module_map.get(singular)) |_| try merges.append(allocator, .{ .from = key, .to = singular });
+            if (module_map.get(singular)) |_| try merge_keys.append(allocator, key);
         }
     }
-    for (merges.items) |m| {
-        if (module_map.get(m.from)) |src_tables| {
-            var target = module_map.getPtr(m.to).?;
-            for (src_tables.items) |t| { try target.append(allocator, t); }
-            _ = module_map.remove(m.from);
+    for (merge_keys.items) |key| {
+        const singular = key[0..key.len-1];
+        if (module_map.getPtr(key)) |src| {
+            var target = module_map.getPtr(singular).?;
+            for (src.items) |t| try target.append(allocator, t);
+            src.deinit(allocator);
         }
+        _ = module_map.remove(key);
     }
+    merge_keys.deinit(allocator);
 
     return module_map;
 }
