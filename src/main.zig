@@ -3663,11 +3663,13 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
     // Auth middleware
     if (sopts.with_auth) {
         try buf.appendSlice(allocator,
-            \\    // -- Auth --
+            \\    // -- Auth (JWT) --
             \\    const jwt_secret = env.get("JWT_SECRET") orelse "changeme-in-production";
+            \\    // Create security module and wire JWT middleware:
+            \\    // var security_mod = zigmodu.security.SecurityModule.init(allocator, jwt_secret);
+            \\    // defer security_mod.deinit();
+            \\    // server.addMiddleware(try zigmodu.security.auth.jwtAuth(&security_mod, allocator));
             \\    _ = jwt_secret;
-            \\    // TODO: wire zigmodu.security.auth with JWT secret
-            \\    // server.addMiddleware(.{ .func = zigmodu.security.auth.jwtAuth(jwt_secret) });
             \\
             \\
         );
