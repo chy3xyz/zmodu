@@ -21,12 +21,15 @@ const Command = enum {
     version,
 };
 
+const JsonStyle = enum { snake, camel };
+
 const GenOptions = struct {
     dry_run: bool = false,
     force: bool = false,
     data_only: bool = false,
     split: bool = false,
     enable_events: bool = false,
+    json_style: JsonStyle = .snake,
 };
 
 const OrmCli = struct {
@@ -52,6 +55,7 @@ fn isOrmLongOption(token: []const u8) bool {
         std.mem.eql(u8, token, "--force") or
         std.mem.eql(u8, token, "--data-only") or
         std.mem.eql(u8, token, "--split") or
+        std.mem.eql(u8, token, "--json-style") or
         std.mem.eql(u8, token, "--enable-events");
 }
 
@@ -96,6 +100,13 @@ fn parseOrmCli(args: []const []const u8) ParseOrmCliResult {
             opts.data_only = true;
         } else if (std.mem.eql(u8, args[i], "--split")) {
             opts.split = true;
+        } else if (std.mem.eql(u8, args[i], "--json-style")) {
+            if (i + 1 >= args.len) return .{ .err_missing_value = "--json-style" };
+            const val = args[i + 1];
+            if (isOrmLongOption(val)) return .{ .err_missing_value = "--json-style" };
+            if (std.mem.eql(u8, val, "camel")) { opts.json_style = .camel; }
+            else if (!std.mem.eql(u8, val, "snake")) { return .{ .err_unknown_flag = val }; }
+            i += 1;
         } else if (std.mem.eql(u8, args[i], "--enable-events")) {
             opts.enable_events = true;
         } else {
@@ -1465,7 +1476,7 @@ fn groupTablesByModule(allocator: std.mem.Allocator, tables: []const TableDef) !
     return module_map;
 }
 
-fn generateModuleModel(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize) ![]const u8 {
+fn generateModuleModel(allocator: std.mem.Allocator, module_name: []const u8, tables: []const TableDef, strip_prefix_len: usize, json_style: JsonStyle) ![]const u8 {
     var buf: std.ArrayList(u8) = .empty;
     defer buf.deinit(allocator);
 
@@ -1493,6 +1504,16 @@ fn generateModuleModel(allocator: std.mem.Allocator, module_name: []const u8, ta
             } else {
                 try buf.print(allocator, "    {s}: {s},\n", .{ col.name, base });
             }
+        }
+        if (json_style == .camel) {
+            try buf.appendSlice(allocator, "\n    pub const json_names = [_]struct { db: []const u8, json: []const u8 }{\n");
+            for (table.columns) |col| {
+                if (col.col_type == .unknown and col.name.len == 0) continue;
+                const camel_name = try toCamelCase(allocator, col.name);
+                defer allocator.free(camel_name);
+                try buf.print(allocator, "        .{{ .db = \"{s}\", .json = \"{s}\" }},\n", .{ col.name, camel_name });
+            }
+            try buf.appendSlice(allocator, "    };\n");
         }
         try buf.appendSlice(allocator, "};\n\n");
     }
@@ -1699,7 +1720,7 @@ fn writeModuleFiles(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u
     defer allocator.free(module_dir);
     try ensureDirGen(io, module_dir, opts);
 
-    const model_code = try generateModuleModel(allocator, module_name, tables, strip_prefix_len);
+    const model_code = try generateModuleModel(allocator, module_name, tables, strip_prefix_len, opts.json_style);
     defer allocator.free(model_code);
     const model_path = try std.fmt.allocPrint(allocator, "{s}/model.zig", .{module_dir});
     defer allocator.free(model_path);
@@ -2514,6 +2535,7 @@ const ScaffoldOpts = struct {
     with_marketing: bool = false,
     with_metrics: bool = false,
     with_auth: bool = false,
+    json_style: JsonStyle = .snake,
 };
 
 fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !ScaffoldOpts {
@@ -2530,6 +2552,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var with_marketing: bool = false;
     var with_metrics: bool = false;
     var with_auth: bool = false;
+    var json_style: JsonStyle = .snake;
 
     var i: usize = 0;
     while (i < args.len) : (i += 1) {
@@ -2561,6 +2584,10 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             with_metrics = true;
         } else if (std.mem.eql(u8, args[i], "--with-auth")) {
             with_auth = true;
+        } else if (std.mem.eql(u8, args[i], "--json-style")) {
+            if (i + 1 >= args.len) return error.CliUsage;
+            if (std.mem.eql(u8, args[i + 1], "camel")) json_style = .camel;
+            i += 1;
         } else {
             std.log.err("Unknown scaffold option: {s}", .{args[i]});
             return error.CliUsage;
@@ -2587,6 +2614,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .with_marketing = with_marketing,
         .with_metrics = with_metrics,
         .with_auth = with_auth,
+        .json_style = json_style,
     };
 }
 
@@ -2669,7 +2697,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     // 4. Generate modules under src/modules/
     const modules_dir = try std.fmt.allocPrint(allocator, "{s}/src/modules", .{project_dir});
     defer allocator.free(modules_dir);
-    const gen_opts: GenOptions = .{ .dry_run = sopts.dry_run, .force = sopts.force };
+    const gen_opts: GenOptions = .{ .dry_run = sopts.dry_run, .force = sopts.force, .json_style = sopts.json_style };
 
     const scaffold_prefix_len = commonTablePrefix(tables);
 
