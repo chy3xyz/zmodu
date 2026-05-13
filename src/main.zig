@@ -1595,6 +1595,37 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
         try buf.appendSlice(allocator, "        return try repo.delete(id);\n");
         try buf.appendSlice(allocator, "    }\n\n");
+
+        // Generate validate method from SQL constraints
+        try buf.print(allocator, "    pub fn validate{s}(entity: model.{s}) !void {{\n", .{ model_name, model_name });
+        try buf.appendSlice(allocator, "        var v = zigmodu.Validator.init(std.heap.page_allocator);\n");
+        try buf.appendSlice(allocator, "        defer v.deinit();\n");
+        var has_rules = false;
+        for (table.columns) |col| {
+            if (col.col_type == .unknown and col.name.len == 0) continue;
+            if (!col.nullable) {
+                // NOT NULL columns need required check
+                if (col.col_type == .string) {
+                    try buf.print(allocator, "        try v.required(\"{s}\", entity.{s});\n", .{ col.name, col.name });
+                    has_rules = true;
+                }
+            }
+            if (col.col_type == .string) {
+                // Check for VARCHAR(n) from original column definition
+                // We approximate: if column was defined with length, add maxLen
+                // For now: add maxLen for common fields
+                if (std.mem.startsWith(u8, col.name, "remark") or std.mem.eql(u8, col.name, "description") or std.mem.eql(u8, col.name, "comment")) {
+                    try buf.print(allocator, "        try v.maxLen(\"{s}\", entity.{s}, 500);\n", .{ col.name, col.name });
+                    has_rules = true;
+                }
+            }
+        }
+        if (has_rules) {
+            try buf.appendSlice(allocator, "        if (v.hasErrors()) return error.ValidationFailed;\n");
+        } else {
+            try buf.appendSlice(allocator, "        _ = v;\n");
+        }
+        try buf.appendSlice(allocator, "    }\n\n");
     }
 
     try buf.appendSlice(allocator, orm_tpl.sqlx_service_footer);
@@ -1660,6 +1691,8 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.print(allocator, "        s.service.validate{s}(entity) catch |e| {{\n", .{model_name});
+        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
         try buf.appendSlice(allocator, "        try http.RenderExt.success(created);\n");
         try buf.appendSlice(allocator, "    }\n\n");
@@ -1669,6 +1702,8 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.print(allocator, "        s.service.validate{s}(entity) catch |e| {{\n", .{model_name});
+        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
         try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
         try buf.appendSlice(allocator, "        try http.RenderExt.success(\"ok\");\n");
         try buf.appendSlice(allocator, "    }\n\n");
