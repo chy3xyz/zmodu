@@ -4936,15 +4936,87 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
 }
 
 fn generateScaffoldTestsZig(allocator: std.mem.Allocator, module_names: []const []const u8) ![]const u8 {
-    _ = module_names;
-    return allocator.dupe(u8,
-        \\const std = @import("std");
-        \\
-        \\test "placeholder" {
-        \\    try std.testing.expect(true);
+    var buf: std.ArrayList(u8) = .empty;
+    defer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "const std = @import(\"std\");\nconst zigmodu = @import(\"zigmodu\");\nconst testing = std.testing;\n\n");
+
+    // Import all modules
+    for (module_names) |mod_name| {
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
+        try buf.print(allocator, "const {s} = @import(\"modules/{s}/module.zig\");\n", .{ var_name, mod_name });
+    }
+    try buf.appendSlice(allocator, "\n");
+
+    // DB setup helper
+    try buf.appendSlice(allocator,
+        \\fn testBackend(alloc: std.mem.Allocator) !zigmodu.data.SqlxBackend {
+        \\    const cfg = zigmodu.data.sqlx.Config{ .driver = .sqlite, .sqlite_path = "/tmp/zmodu_test.db", .max_open_conns = 1 };
+        \\    var client = try zigmodu.data.sqlx.Client.open(alloc, std.testing.io, cfg);
+        \\    return zigmodu.data.SqlxBackend{ .allocator = alloc, .client = &client };
         \\}
         \\
     );
+
+    // Generate CRUD test per module
+    for (module_names) |mod_name| {
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
+        const pascal = try toPascalCase(allocator, var_name);
+        defer allocator.free(pascal);
+
+        const pl_sfx = if (std.mem.endsWith(u8, pascal, "s") or std.mem.endsWith(u8, pascal, "S")) "" else "s";
+        // Use "name" field if module likely has one; otherwise just test init
+        const has_name = std.mem.indexOf(u8, var_name, "user") != null or
+                         std.mem.indexOf(u8, var_name, "product") != null or
+                         std.mem.indexOf(u8, var_name, "customer") != null or
+                         std.mem.indexOf(u8, var_name, "dept") != null or
+                         std.mem.indexOf(u8, var_name, "role") != null;
+        if (has_name) {
+            try buf.print(allocator,
+                \\test "integration: {s} CRUD" {{
+                \\    const backend = try testBackend(testing.allocator);
+                \\    defer backend.client.deinit();
+                \\    var p = {s}.persistence.{s}Persistence.init(backend);
+                \\    var svc = {s}.service.{s}Service.init(&p);
+                \\    _ = try svc.create{s}(.{{ .name = "test" }});
+                \\    const list = try svc.list{s}{s}(0, 10);
+                \\    try testing.expect(list.total >= 1);
+                \\    if (list.items[0].id) |id| {{
+                \\        const got = try svc.get{s}(id);
+                \\        try testing.expect(got != null);
+                \\        try svc.delete{s}(id);
+                \\        try testing.expect((try svc.get{s}(id)) == null);
+                \\    }}
+                \\}}
+                \\
+            , .{ mod_name, var_name, pascal, var_name, pascal, pascal, pascal, pl_sfx, pascal, pascal, pascal });
+        } else {
+            try buf.print(allocator,
+                \\test "integration: {s} module init" {{
+                \\    const backend = try testBackend(testing.allocator);
+                \\    defer backend.client.deinit();
+                \\    var p = {s}.persistence.{s}Persistence.init(backend);
+                \\    var svc = {s}.service.{s}Service.init(&p);
+                \\    const list = try svc.list{s}{s}(0, 10);
+                \\    try testing.expect(list.total >= 0);
+                \\}}
+                \\
+            , .{ mod_name, var_name, pascal, var_name, pascal, pascal, pl_sfx });
+        }
+    }
+
+    // Module lifecycle test
+    try buf.appendSlice(allocator, "\ntest \"integration: module lifecycle\" {\n");
+    for (module_names) |mod_name| {
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
+        try buf.print(allocator, "    try {s}.init();\n    {s}.deinit();\n", .{ var_name, var_name });
+    }
+    try buf.appendSlice(allocator, "}\n");
+
+    return buf.toOwnedSlice(allocator);
 }
 
 // ── Tests ────────────────────────────────────────────────────────
