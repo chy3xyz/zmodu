@@ -389,11 +389,58 @@ fn printVersion() void {
 
 fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     _ = args;
-    std.log.info("Upgrading zmodu from source...", .{});
 
-    // git pull (current directory assumed to be zmodu source repo)
+    // Resolve zmodu source directory
+    var src_dir: ?[]const u8 = null;
+    defer if (src_dir) |d| allocator.free(d);
+
+    // 1. Check if current directory is zmodu source
+    const zon_check = std.Io.Dir.cwd().readFileAlloc(io, "build.zig.zon", allocator, std.Io.Limit.limited(4096));
+    if (zon_check) |z| {
+        defer allocator.free(z);
+        if (std.mem.indexOf(u8, z, ".zmodu") != null) {
+            const git_check = std.Io.Dir.cwd().readFileAlloc(io, ".git/HEAD", allocator, std.Io.Limit.limited(1));
+            if (git_check) |gc| {
+                allocator.free(gc);
+                src_dir = try allocator.dupe(u8, ".");
+            } else |_| {}
+        }
+    } else |_| {}
+
+    // 2. Try HOME-relative common paths
+    if (src_dir == null) {
+        const home = if (std.c.getenv("HOME")) |ptr| std.mem.sliceTo(ptr, 0) else "";
+        const candidates = [_][]const u8{
+            "w4_proj/zig_ws/zmodu",
+            "zmodu",
+            "src/zmodu",
+        };
+        for (candidates) |c| {
+            const p = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ home, c });
+            const git_head = try std.fmt.allocPrint(allocator, "{s}/.git/HEAD", .{p});
+            defer allocator.free(git_head);
+            const found = std.Io.Dir.cwd().readFileAlloc(io, git_head, allocator, std.Io.Limit.limited(64));
+            if (found) |content| {
+                allocator.free(content);
+                src_dir = p;
+                break;
+            } else |_| {
+                allocator.free(p);
+            }
+        }
+    }
+
+    if (src_dir == null) {
+        std.log.err("Cannot find zmodu source. cd to zmodu dir or clone it first.", .{});
+        std.log.info("  git clone https://github.com/chy3xyz/zmodu.git && cd zmodu && zig build", .{});
+        return error.UpgradeFailed;
+    }
+
+    std.log.info("Upgrading zmodu from {s}...", .{src_dir.?});
+
+    // git pull
     const pull_result = try std.process.run(allocator, io, .{
-        .argv = &.{ "git", "pull", "origin", "main" },
+        .argv = &.{ "git", "-C", src_dir.?, "pull", "origin", "main" },
     });
     defer allocator.free(pull_result.stdout);
     defer allocator.free(pull_result.stderr);
@@ -406,6 +453,7 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
     // zig build
     const build_result = try std.process.run(allocator, io, .{
         .argv = &.{ "zig", "build" },
+        .cwd = .{ .path = src_dir.? },
     });
     defer allocator.free(build_result.stdout);
     defer allocator.free(build_result.stderr);
@@ -414,7 +462,9 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
         return error.UpgradeFailed;
     }
 
-    std.log.info("zmodu upgraded. Install: cp zig-out/bin/zmodu ~/.local/bin/zmodu", .{});
+    const bin = try std.fmt.allocPrint(allocator, "{s}/zig-out/bin/zmodu", .{src_dir.?});
+    defer allocator.free(bin);
+    std.log.info("zmodu upgraded. Install: cp {s} ~/.local/bin/zmodu", .{bin});
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
