@@ -1467,6 +1467,37 @@ fn parseColumns(allocator: std.mem.Allocator, text: []const u8, i: *usize) ![]Co
     return cols.toOwnedSlice(allocator);
 }
 
+/// Mark columns as primary key from table-level PRIMARY KEY(col) constraints.
+fn markPrimaryKeyColumns(allocator: std.mem.Allocator, sql: []const u8, body_start: usize, body_end: usize, columns: []ColumnDef) void {
+    const body = sql[body_start..@min(body_end, sql.len)];
+    var body_upper = std.ArrayList(u8).empty;
+    body_upper.appendSlice(allocator, body) catch return;
+    defer body_upper.deinit(allocator);
+    _ = std.ascii.upperString(body_upper.items, body);
+
+    var pos: usize = 0;
+    while (std.mem.indexOfPos(u8, body_upper.items, pos, "PRIMARY KEY")) |pk_idx| {
+        pos = pk_idx + "PRIMARY KEY".len;
+        // Skip whitespace, then expect '('
+        var j = pk_idx + "PRIMARY KEY".len;
+        while (j < body.len and (body[j] == ' ' or body[j] == '\t' or body[j] == '\n')) j += 1;
+        if (j >= body.len or body[j] != '(') continue;
+        j += 1;
+        // Read column name
+        while (j < body.len and (body[j] == ' ' or body[j] == '\t' or body[j] == '\n')) j += 1;
+        const col_start = j;
+        while (j < body.len and body[j] != ')' and body[j] != ',' and body[j] != ' ' and body[j] != '\t' and body[j] != '\n') j += 1;
+        const col_name = std.mem.trim(u8, body[col_start..j], " \t\n\r`");
+        // Mark matching column
+        for (columns) |*col| {
+            if (std.mem.eql(u8, col.name, col_name)) {
+                col.is_primary_key = true;
+                col.nullable = false;
+            }
+        }
+    }
+}
+
 fn parseSqlSchema(allocator: std.mem.Allocator, sql: []const u8) ![]TableDef {
     var tables: std.ArrayList(TableDef) = std.ArrayList(TableDef).empty;
     defer tables.deinit(allocator);
@@ -1484,6 +1515,8 @@ fn parseSqlSchema(allocator: std.mem.Allocator, sql: []const u8) ![]TableDef {
                     const columns = try parseColumns(allocator, sql, &i);
                     const body_end = i;
                     const fks = try extractForeignKeys(allocator, sql, body_start, body_end);
+                    // Mark table-level PRIMARY KEY columns
+                    markPrimaryKeyColumns(allocator, sql, body_start, body_end, columns);
                     try tables.append(allocator, .{ .name = table_name, .columns = columns, .foreign_keys = fks });
                 }
             }
