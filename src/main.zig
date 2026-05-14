@@ -1256,6 +1256,20 @@ fn zigScalarColumnType(col_type: ColumnType) []const u8 {
     };
 }
 
+fn pkColumnZigType(table: TableDef) []const u8 {
+    for (table.columns) |col| {
+        if (col.is_primary_key) return zigScalarColumnType(col.col_type);
+    }
+    return "i64";
+}
+
+fn pkIsString(table: TableDef) bool {
+    for (table.columns) |col| {
+        if (col.is_primary_key) return col.col_type == .string or col.col_type == .datetime or col.col_type == .unknown;
+    }
+    return false;
+}
+
 fn skipWhitespaceAndComments(text: []const u8, i: *usize) void {
     while (i.* < text.len) {
         if (std.ascii.isWhitespace(text[i.*])) {
@@ -2513,7 +2527,8 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         try buf.appendSlice(allocator, "        return try repo.findPage(page, size);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        try buf.print(allocator, "    pub fn get{s}(self: *{s}Service, id: i64) !?model.{s} {{\n", .{ model_name, pascal_module, model_name });
+        const pk_type = pkColumnZigType(table);
+        try buf.print(allocator, "    pub fn get{s}(self: *{s}Service, id: {s}) !?model.{s} {{\n", .{ model_name, pascal_module, pk_type, model_name });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
         try buf.appendSlice(allocator, "        return try repo.findById(id);\n");
         try buf.appendSlice(allocator, "    }\n\n");
@@ -2528,7 +2543,7 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         try buf.appendSlice(allocator, "        return try repo.update(entity);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        try buf.print(allocator, "    pub fn delete{s}(self: *{s}Service, id: i64) !void {{\n", .{ model_name, pascal_module });
+        try buf.print(allocator, "    pub fn delete{s}(self: *{s}Service, id: {s}) !void {{\n", .{ model_name, pascal_module, pk_type });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
         try buf.appendSlice(allocator, "        return try repo.delete(id);\n");
         try buf.appendSlice(allocator, "    }\n\n");
@@ -2613,6 +2628,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         const model_name = try toPascalCase(allocator, effective_name);
         defer allocator.free(model_name);
         const pl_sfx2 = if (std.mem.endsWith(u8, model_name, "s") or std.mem.endsWith(u8, model_name, "S")) "" else "s";
+        const pk_is_str2 = pkIsString(table);
 
         // list
         try buf.print(allocator, "    fn list{s}{s}(ctx: *http.Context) !void {{\n", .{model_name, pl_sfx2});
@@ -2626,7 +2642,11 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         // get
         try buf.print(allocator, "    fn get{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
-        try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+        if (pk_is_str2) {
+            try buf.appendSlice(allocator, "        const id = try ctx.paramStr(\"id\");\n");
+        } else {
+            try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+        }
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
         try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
         try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
@@ -2657,7 +2677,11 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         // delete
         try buf.print(allocator, "    fn delete{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
-        try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+        if (pk_is_str2) {
+            try buf.appendSlice(allocator, "        const id = try ctx.paramStr(\"id\");\n");
+        } else {
+            try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+        }
         try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
         try buf.appendSlice(allocator, "        try ctx.json(204, \"\");\n");
         try buf.appendSlice(allocator, "    }\n\n");
