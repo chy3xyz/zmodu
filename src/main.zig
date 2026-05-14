@@ -384,7 +384,7 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu v0.10.0", .{});
+    std.log.info("zmodu v0.10.1", .{});
 }
 
 fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
