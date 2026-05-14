@@ -1345,7 +1345,12 @@ fn parseColumnTypeName(text: []const u8, i: *usize) ColumnType {
         std.mem.eql(u8, upper, "SMALLINT") or
         std.mem.eql(u8, upper, "TINYINT") or
         std.mem.eql(u8, upper, "SERIAL") or
-        std.mem.eql(u8, upper, "INT64")) return .int;
+        std.mem.eql(u8, upper, "BIGSERIAL") or
+        std.mem.eql(u8, upper, "SMALLSERIAL") or
+        std.mem.eql(u8, upper, "INT64") or
+        std.mem.eql(u8, upper, "INT2") or
+        std.mem.eql(u8, upper, "INT4") or
+        std.mem.eql(u8, upper, "INT8")) return .int;
     if (std.mem.eql(u8, upper, "VARCHAR") or
         std.mem.eql(u8, upper, "TEXT") or
         std.mem.eql(u8, upper, "CHAR") or
@@ -1359,11 +1364,15 @@ fn parseColumnTypeName(text: []const u8, i: *usize) ColumnType {
         std.mem.eql(u8, upper, "DOUBLE") or
         std.mem.eql(u8, upper, "REAL") or
         std.mem.eql(u8, upper, "NUMERIC") or
-        std.mem.eql(u8, upper, "DECIMAL")) return .float;
+        std.mem.eql(u8, upper, "DECIMAL") or
+        std.mem.eql(u8, upper, "FLOAT4") or
+        std.mem.eql(u8, upper, "FLOAT8")) return .float;
     if (std.mem.eql(u8, upper, "DATETIME") or
         std.mem.eql(u8, upper, "TIMESTAMP") or
+        std.mem.eql(u8, upper, "TIMESTAMPTZ") or
         std.mem.eql(u8, upper, "DATE") or
-        std.mem.eql(u8, upper, "TIME")) return .datetime;
+        std.mem.eql(u8, upper, "TIME") or
+        std.mem.eql(u8, upper, "TIMETZ")) return .datetime;
     return .unknown;
 }
 
