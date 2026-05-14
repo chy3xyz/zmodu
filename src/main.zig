@@ -233,7 +233,7 @@ fn toPascalCase(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     var capitalize = true;
     while (i < input.len) : (i += 1) {
         const c = input[i];
-        if (c == '-' or c == '_') {
+        if (c == '-' or c == '_' or c == '/') {
             capitalize = true;
         } else if (capitalize) {
             result[j] = std.ascii.toUpper(c);
@@ -254,7 +254,7 @@ fn toCamelCase(allocator: std.mem.Allocator, input: []const u8) ![]const u8 {
     var capitalize = false;
     while (i < input.len) : (i += 1) {
         const c = input[i];
-        if (c == '-' or c == '_') {
+        if (c == '-' or c == '_' or c == '/') {
             capitalize = true;
         } else if (capitalize) {
             result[j] = std.ascii.toUpper(c);
@@ -4796,32 +4796,38 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
     // Persistence/Service/API init
     try buf.appendSlice(allocator, "    // -- Persistence --\n");
     for (module_names) |name| {
-        const pascal = try toPascalCase(allocator, name);
+        const var_name = try replaceChar(allocator, name, '/', '_');
+        defer allocator.free(var_name);
+        const pascal = try toPascalCase(allocator, var_name);
         defer allocator.free(pascal);
-        if (isZigReserved(name)) {
-            try buf.print(allocator, "    var {s}_p = {s}_mod.persistence.{s}Persistence.init(backend);\n", .{ name, name, pascal });
+        if (isZigReserved(var_name)) {
+            try buf.print(allocator, "    var {s}_p = {s}_mod.persistence.{s}Persistence.init(backend);\n", .{ var_name, var_name, pascal });
         } else {
-            try buf.print(allocator, "    var {s}_p = {s}.persistence.{s}Persistence.init(backend);\n", .{ name, name, pascal });
+            try buf.print(allocator, "    var {s}_p = {s}.persistence.{s}Persistence.init(backend);\n", .{ var_name, var_name, pascal });
         }
     }
     try buf.appendSlice(allocator, "\n    // -- Service --\n");
     for (module_names) |name| {
-        const pascal = try toPascalCase(allocator, name);
+        const var_name = try replaceChar(allocator, name, '/', '_');
+        defer allocator.free(var_name);
+        const pascal = try toPascalCase(allocator, var_name);
         defer allocator.free(pascal);
-        if (isZigReserved(name)) {
-            try buf.print(allocator, "    var {s}_svc = {s}_mod.service.{s}Service.init(&{s}_p);\n", .{ name, name, pascal, name });
+        if (isZigReserved(var_name)) {
+            try buf.print(allocator, "    var {s}_svc = {s}_mod.service.{s}Service.init(&{s}_p);\n", .{ var_name, var_name, pascal, var_name });
         } else {
-            try buf.print(allocator, "    var {s}_svc = {s}.service.{s}Service.init(&{s}_p);\n", .{ name, name, pascal, name });
+            try buf.print(allocator, "    var {s}_svc = {s}.service.{s}Service.init(&{s}_p);\n", .{ var_name, var_name, pascal, var_name });
         }
     }
     try buf.appendSlice(allocator, "\n    // -- API --\n");
     for (module_names) |name| {
-        const pascal = try toPascalCase(allocator, name);
+        const var_name = try replaceChar(allocator, name, '/', '_');
+        defer allocator.free(var_name);
+        const pascal = try toPascalCase(allocator, var_name);
         defer allocator.free(pascal);
-        if (isZigReserved(name)) {
-            try buf.print(allocator, "    var {s}_api = {s}_mod.api.{s}Api.init(&{s}_svc);\n", .{ name, name, pascal, name });
+        if (isZigReserved(var_name)) {
+            try buf.print(allocator, "    var {s}_api = {s}_mod.api.{s}Api.init(&{s}_svc);\n", .{ var_name, var_name, pascal, var_name });
         } else {
-            try buf.print(allocator, "    var {s}_api = {s}.api.{s}Api.init(&{s}_svc);\n", .{ name, name, pascal, name });
+            try buf.print(allocator, "    var {s}_api = {s}.api.{s}Api.init(&{s}_svc);\n", .{ var_name, var_name, pascal, var_name });
         }
     }
 
