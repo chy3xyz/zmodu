@@ -17,6 +17,7 @@ const Command = enum {
     @"test",
     plugin,
     life,
+    upgrade,
     help,
     version,
 };
@@ -209,6 +210,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .@"test" => try cmdTest(io, allocator, cmd_args),
         .plugin => try cmdPlugin(io, allocator, cmd_args),
         .life => try cmdLife(io, allocator, cmd_args),
+        .upgrade => try cmdUpgrade(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -315,6 +317,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "test")) return .@"test";
     if (std.mem.eql(u8, cmd, "plugin")) return .plugin;
     if (std.mem.eql(u8, cmd, "life")) return .life;
+    if (std.mem.eql(u8, cmd, "upgrade")) return .upgrade;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -345,6 +348,7 @@ fn printUsage() void {
         \\  test <module>   Generate integration test scaffolding
         \\  plugin         List/manage stub plugins (migration gap filler)
         \\  life           Project evolutionary memory (tree, fingerprint, evolve)
+        \\  upgrade        Upgrade zmodu to latest (git pull + zig build)
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -380,7 +384,38 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu version 0.9.2", .{});
+    std.log.info("zmodu v0.10.0", .{});
+}
+
+fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    _ = args;
+    std.log.info("Upgrading zmodu from source...", .{});
+
+    // git pull
+    const pull_result = try std.process.run(allocator, io, .{
+        .argv = &.{ "git", "pull", "origin", "main" },
+    });
+    defer allocator.free(pull_result.stdout);
+    defer allocator.free(pull_result.stderr);
+    if (pull_result.term != .exited or pull_result.term.exited != 0) {
+        std.log.err("git pull failed: {s}", .{pull_result.stderr});
+        return error.UpgradeFailed;
+    }
+    std.log.info("{s}", .{std.mem.trim(u8, pull_result.stdout, " \n\r")});
+
+    // zig build
+    const build_result = try std.process.run(allocator, io, .{
+        .argv = &.{ "zig", "build" },
+    });
+    defer allocator.free(build_result.stdout);
+    defer allocator.free(build_result.stderr);
+    if (build_result.term != .exited or build_result.term.exited != 0) {
+        std.log.err("zig build failed: {s}", .{build_result.stderr});
+        return error.UpgradeFailed;
+    }
+
+    std.log.info("zmodu upgraded successfully. New binary at zig-out/bin/zmodu", .{});
+    std.log.info("Run: cp zig-out/bin/zmodu /usr/local/bin/zmodu   (or your install path)", .{});
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
