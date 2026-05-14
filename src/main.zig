@@ -2963,7 +2963,7 @@ fn cmdOrm(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         }
     }
 
-    const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+    const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
         std.log.err("Cannot read SQL file '{s}': {s}", .{ sql_path, @errorName(err) });
         return err;
     };
@@ -3627,7 +3627,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     if (sopts.db_dsn) |dsn| {
         // Import SQL to DB first if both --sql and --from-db provided
         if (sopts.sql_path) |sql_path| {
-            const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+            const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
                 std.log.err("Cannot read SQL file '{s}': {s}", .{ sql_path, @errorName(err) });
                 return err;
             };
@@ -3637,7 +3637,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         tables = try introspectDatabase(io, allocator, dsn);
         std.log.info("Scaffolding '{s}' from {d} tables in database", .{ sopts.project_name, tables.len });
     } else if (sopts.sql_path) |sql_path| {
-        const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(1024 * 1024)) catch |err| {
+        const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
             std.log.err("Cannot read SQL file '{s}': {s}", .{ sql_path, @errorName(err) });
             return err;
         };
