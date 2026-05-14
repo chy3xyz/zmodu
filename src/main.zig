@@ -558,8 +558,8 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     defer allocator.free(agents_path);
     try writeFile(io, agents_path, agents_md);
 
-    // Generate .ai/prompts/ directory with AI prompt templates
-    const ai_prompts_dir = try std.fmt.allocPrint(allocator, "{s}/.ai/prompts", .{project_name});
+    // Generate .claude/prompts/ directory with AI prompt templates
+    const ai_prompts_dir = try std.fmt.allocPrint(allocator, "{s}/.claude/prompts", .{project_name});
     defer allocator.free(ai_prompts_dir);
     try std.Io.Dir.cwd().createDirPath(io, ai_prompts_dir);
 
@@ -4114,8 +4114,8 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(agents_path);
     try writeFileGen(io, agents_path, agents_md, gen_opts);
 
-    // 12. Generate .ai/prompts/ directory with AI task templates
-    const ai_dir = try std.fmt.allocPrint(allocator, "{s}/.ai/prompts", .{project_dir});
+    // 12. Generate .claude/prompts/ directory with AI task templates
+    const ai_dir = try std.fmt.allocPrint(allocator, "{s}/.claude/prompts", .{project_dir});
     defer allocator.free(ai_dir);
     try ensureDirGen(io, ai_dir, gen_opts);
 
@@ -4698,6 +4698,27 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\```
         \\
     , gen_opts);
+
+    // 14. Generate .opencode/ — OpenCode AI compatibility
+    const opencode_dir = try std.fmt.allocPrint(allocator, "{s}/.opencode", .{out_dir});
+    defer allocator.free(opencode_dir);
+    try ensureDirGen(io, opencode_dir, gen_opts);
+
+    const opencode_readme = try std.fmt.allocPrint(allocator,
+        \\# OpenCode AI Support
+        \\
+        \\This project uses the Claude Code agent skills format (agentskills.io spec).
+        \\Skills and prompts are shared from .claude/ directory.
+        \\
+        \\To use with OpenCode, configure your OpenCode workspace to read from:
+        \\  skills: .claude/skills/
+        \\  prompts: .claude/prompts/
+        \\
+    , .{});
+    defer allocator.free(opencode_readme);
+    const opencode_rm_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{opencode_dir});
+    defer allocator.free(opencode_rm_path);
+    try writeFileGen(io, opencode_rm_path, opencode_readme, gen_opts);
 }
 
 fn isZigReserved(name: []const u8) bool {
