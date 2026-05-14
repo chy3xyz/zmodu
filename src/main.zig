@@ -3975,6 +3975,24 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(tests_path);
     try writeFileGen(io, tests_path, tests_zig, gen_opts);
 
+    // 8.5 Generate test_api.sh — curl-based API smoke test
+    var sh_buf: std.ArrayList(u8) = .empty;
+    defer sh_buf.deinit(allocator);
+    try sh_buf.appendSlice(allocator, "#!/bin/bash\nset -e\nPORT=${HTTP_PORT:-8080}\nBASE=\"http://localhost:$PORT/api\"\n\necho \"=== Health ===\"\ncurl -sf $BASE/health/live | grep -q UP && echo \"PASS\" || echo \"FAIL\"\n\n");
+    for (module_names.items) |mod_name| {
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
+        const snake = try toSnakeCase(allocator, var_name);
+        defer allocator.free(snake);
+        const plural = try pluralizeRoute(allocator, snake);
+        defer allocator.free(plural);
+        try sh_buf.print(allocator, "echo \"=== {s} ===\"\necho \"  POST /{s}\"\nR=$(curl -sf -X POST $BASE/{s} -H 'Content-Type: application/json' -d '{{\"name\":\"test_{s}\"}}' 2>&1)\necho \"  $R\"\ncurl -sf $BASE/{s} | head -c 80 && echo \"\"\necho \"  PASS: {s}\"\n\n", .{ mod_name, plural, plural, var_name, plural, mod_name });
+    }
+    try sh_buf.appendSlice(allocator, "echo \"=== ALL PASS ===\"\n");
+    const sh_path = try std.fmt.allocPrint(allocator, "{s}/test_api.sh", .{project_dir});
+    defer allocator.free(sh_path);
+    try writeFileGen(io, sh_path, sh_buf.items, gen_opts);
+
     // 9. Generate src/business/module.zig (skeleton)
     const biz_dir = try std.fmt.allocPrint(allocator, "{s}/src/business", .{project_dir});
     defer allocator.free(biz_dir);
