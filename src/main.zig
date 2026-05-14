@@ -10,7 +10,6 @@ const Command = enum {
     orm,
     generate,
     scaffold,
-    bigdemo,
     migration,
     health,
     config,
@@ -203,7 +202,6 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .orm => try cmdOrm(io, allocator, cmd_args),
         .generate => try cmdGenerate(io, allocator, cmd_args),
         .scaffold => try cmdScaffold(io, allocator, cmd_args),
-        .bigdemo => try cmdBigdemo(io, allocator, cmd_args),
         .migration => try cmdMigration(io, allocator, cmd_args),
         .health => try cmdHealth(io, allocator, cmd_args),
         .config => try cmdConfig(io, allocator, cmd_args),
@@ -309,7 +307,6 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "orm")) return .orm;
     if (std.mem.eql(u8, cmd, "generate")) return .generate;
     if (std.mem.eql(u8, cmd, "scaffold")) return .scaffold;
-    if (std.mem.eql(u8, cmd, "bigdemo")) return .bigdemo;
     if (std.mem.eql(u8, cmd, "migration")) return .migration;
     if (std.mem.eql(u8, cmd, "migrate")) return .migration;
     if (std.mem.eql(u8, cmd, "health")) return .health;
@@ -341,7 +338,6 @@ fn printUsage() void {
         \\  api <name>      Generate API endpoint
         \\  orm             Generate ORM modules from SQL (auto-groups by prefix)
         \\  scaffold        One-shot: SQL -> full project with wiring
-        \\  bigdemo         Regenerate shopdemo (152 tables → 42 modules)
         \\  migration <n>   Generate Flyway-style migration file (V{timestamp}__{name}.sql)
         \\  health          Generate health check endpoint boilerplate
         \\  config          Generate ExternalizedConfig validator boilerplate
@@ -3469,7 +3465,6 @@ fn cmdConfig(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
     std.log.info("Created config validator: {s}", .{filepath});
 }
 
-// ── bigdemo: shortcut to regenerate the full shopdemo ──────────────
 
 
 // ── test: generate integration test scaffolding ──────────────────
@@ -3534,36 +3529,6 @@ fn cmdTest(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !
     std.log.info("Created test scaffold: {s}", .{fp});
 }
 
-
-fn cmdBigdemo(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
-    _ = args; // no extra args — everything is hardcoded
-    const embedded_sql = @embedFile("shopdemo/init.sql");
-
-    // Write embedded SQL to a temp file so cmdScaffold can read it
-    const tmp_path = ".zmodu_bigdemo_tmp.sql";
-    const tmp_file = try std.Io.Dir.cwd().createFile(io, tmp_path, .{});
-    try tmp_file.writeStreamingAll(io, embedded_sql);
-    tmp_file.close(io);
-    defer std.Io.Dir.cwd().deleteFile(io, tmp_path) catch {};
-
-    // Delegate to scaffold with all capability flags
-    const scaffold_args = [_][]const u8{
-        "--sql",        tmp_path,
-        "--name",       "shopdemo",
-        "--out",        ".",
-        "--with-events",
-        "--with-resilience",
-        "--with-cluster",
-        "--with-marketing",
-        "--with-metrics",
-        "--with-auth",
-        "--force",
-    };
-
-    std.log.info("zmodu bigdemo — regenerating shopdemo (152 tables, 42 modules)...", .{});
-    try cmdScaffold(io, allocator, &scaffold_args);
-    std.log.info("bigdemo complete — shopdemo/ ready", .{});
-}
 
 // ── scaffold: one-shot SQL → full project ────────────────────────
 
@@ -4554,7 +4519,6 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\zmodu orm --sql schema.sql --out src/modules           # auto-group
         \\zmodu orm --sql s.sql --module name --force            # single module
         \\zmodu scaffold --sql s.sql --name app --with-metrics   # full project
-        \\zmodu bigdemo                                          # reference shopdemo
         \\```
         \\
         \\## SQL Type → Zig Type
