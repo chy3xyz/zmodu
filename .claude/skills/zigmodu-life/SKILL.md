@@ -1,136 +1,71 @@
 ---
 name: zigmodu-life
-description: Project digital life system. Read/write .life/ evolutionary memory. Use when first touching a project, recording decisions, evolving milestones, or understanding project history.
+description: Project digital life system. Use zmodu life CLI for all .life/ operations. Read .life/ on first contact. Record decisions via JSONL. Evolve milestones via tree/.
 allowed-tools: Read, Write, Bash, Grep, Glob
 ---
 
-# Digital Life — Project Evolutionary Memory
+# Digital Life — Always Use CLI
 
-## AI Contract: First Contact
+**NEVER write .life/ files manually. ALWAYS use `zmodu life` commands.**
 
-When AI first touches a project, ALWAYS read `.life/` before any code change.
-
-```
-INPUT:  project directory
-OUTPUT: understanding of project history, decisions, and current state
-
-Pipeline:
-  1. Read .life/DNA.md → understand project origin
-  2. Read .life/manifest.json → know current capabilities
-  3. Read .life/tree/ latest → see evolution state
-  4. Read .life/memory/decisions.jsonl → understand past choices
-  5. Write .life/awaken.md → record your observation
-  6. Now you can code.
-```
-
-## .life/ Directory Structure
-
-```
-.life/
-├── DNA.md                  # Project genome (never deleted)
-├── fingerprint.sha256      # Current state fingerprint
-├── manifest.json           # Capability manifest
-├── tree/                   # Evolution tree
-│   └── v0.1.0.md           # Per-version evolution record
-├── memory/
-│   ├── decisions.jsonl     # Decision log (one per line)
-│   ├── patterns.json       # Discovered patterns
-│   └── fixes.jsonl         # Bug fix history
-├── genes/                  # Reusable module templates
-└── awaken.md               # AI first-contact observation
-```
-
-## AI Must Do On Every Code Change
-
-After every successful `zig build test`:
+## First Contact (mandatory, before any code change)
 
 ```bash
-# 1. Record decisions made
-echo '{"time":"$(date -u +%Y-%m-%dT%H:%M:%SZ)","type":"ARCH|PERF|SEC|FEAT|FIX","decision":"<what>","reason":"<why>","files":["<changed>"]}' >> .life/memory/decisions.jsonl
+cat .life/DNA.md                    # understand project origin
+cat .life/manifest.json             # know capabilities
+zmodu life tree                     # see evolution history
+cat .life/memory/decisions.jsonl    # understand past choices
+```
 
-# 2. Update fingerprint
+## Recording Decisions (after every code change)
+
+```bash
+# Append one-line JSONL decision record
+echo '{"t":"FEAT|FIX|ARCH|PERF|SEC","d":"<what>","r":"<why>","f":["<file>"]}' >> .life/memory/decisions.jsonl
+```
+
+Key abbreviations:
+- `t` = type (FEAT/FIX/ARCH/PERF/SEC)
+- `d` = decision (what was done)
+- `r` = reason (why)
+- `f` = files changed (array)
+
+## Recording Milestones
+
+```bash
+# When significant evolution occurs (new capability, major refactor, phase complete)
+zmodu life evolve v0.2.0 "order state machine complete"
+
+# Check evolution tree
+zmodu life tree
+
+# Verify fingerprint changed
 zmodu life fingerprint
-
-# 3. If milestone reached
-zmodu life evolve --version vX.Y.Z --message "<summary>"
 ```
-
-## DNA.md Template
-
-```markdown
-# DNA: <project>
-
-## Birth
-- Time: <timestamp>
-- Parent: <how created>
-- Command: <exact command>
-
-## Genetic Traits
-- Framework: zigmodu vX.Y.Z
-- Language: Zig 0.16.0
-- Architecture: Modulith
-- Database: <mysql|postgres|sqlite>
-
-## Core Principles
-1. <principle>
-2. <principle>
-```
-
-## manifest.json Format
-
-```json
-{
-  "name": "shopdemo",
-  "modules": 42,
-  "tables": 152,
-  "routes": 487,
-  "capabilities": ["CRUD","HealthCheck","EventBus","CircuitBreaker","RateLimiter","Prometheus","Auth"],
-  "dependencies": {"zigmodu": "v0.9.4", "zig": "0.16.0"},
-  "fingerprint": "a1b2c3d4..."
-}
-```
-
-## Evolution Record (tree/vX.Y.Z.md)
-
-```markdown
-# v0.2.0 — <title>
-
-## Evolution Time
-<timestamp>
-
-## Parent
-v0.1.0 (<fingerprint>)
-
-## Changes
-- Added: <files>
-- Modified: <files>
-- Deleted: <files>
-
-## New Capabilities
-- <capability>
-
-## AI Decisions
-- [AUTO] <decision>
-- [REVIEW] <decision>
-- [MANUAL] <decision>
 
 ## Fingerprint
-<new fingerprint>
-```
-
-## Fingerprint Generation
 
 ```bash
-# Composite hash of all .life/ content
-cat .life/DNA.md .life/manifest.json .life/tree/*.md .life/memory/*.jsonl | sha256sum > .life/fingerprint.sha256
+zmodu life fingerprint
+# Output: fingerprint: a1b2c3d4e5f6...
+# Fingerprint changes = project evolved. Same = no change.
 ```
 
-Fingerprint changes = project evolved. Same fingerprint = no evolution.
-
-## Self-Evolution Loop
+## AI Workflow
 
 ```
-Read .life/ → Understand history → Make decisions → Record in memory/ →
-Execute changes → zig build test → Evolve tree/ → Update fingerprint →
-Next AI reads updated .life/ → Understands everything that happened
+1. First contact → cat .life/DNA.md + zmodu life tree
+2. Read decisions → cat .life/memory/decisions.jsonl
+3. Make changes → zig build test
+4. Record → echo '{...}' >> .life/memory/decisions.jsonl
+5. Milestone? → zmodu life evolve vX.Y.Z "summary"
+6. Verify → zmodu life fingerprint
+```
+
+## NEVER do this
+
+```
+❌ vim .life/tree/v0.2.0.md     # use zmodu life evolve instead
+❌ echo "v0.2.0" > .life/fingerprint.sha256  # use zmodu life fingerprint
+❌ rm .life/*                    # never delete evolutionary memory
 ```

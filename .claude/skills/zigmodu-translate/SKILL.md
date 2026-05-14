@@ -1,15 +1,15 @@
 ---
 name: zigmodu-translate
-description: Translate Java/PHP/Go/Rust logic to ZigModu. Input: source file path. Output: _ext.zig file with [AUTO]/[REVIEW]/[MANUAL] tags. Never edits generated files.
+description: Translate Java/PHP/Go/Rust logic to ZigModu. Input: source file path. Output: ext/service.zig or ext/api.zig with [AUTO]/[REVIEW]/[MANUAL] tags. Never edits generated files.
 allowed-tools: Read, Write, Bash, Grep, Glob
 ---
 
-# Translate Business Logic → ZigModu _ext Files
+# Translate Business Logic → ZigModu ext/ Files
 
 ## AI Contract
 
 **Input**: path to Java/PHP/Go/Rust source file
-**Output**: `src/modules/<name>/service_ext.zig` or `src/modules/<name>/api_ext.zig`
+**Output**: `src/modules/<name>/ext/service.zig` or `src/modules/<name>/ext/api.zig`
 **Rule**: output file path follows module-map.json mapping. See zigmodu-analyze.
 
 ## Translation Decision Tree
@@ -27,8 +27,6 @@ Method is pure CRUD delegation?
 
 ## Type Mapping Table
 
-AI uses this exact mapping. No deviation.
-
 ```
 Java                         →  Zig
 ────────────────────────────────────────────
@@ -39,16 +37,11 @@ double, Double, BigDecimal   →  f64
 boolean, Boolean             →  bool
 Date, LocalDateTime, Instant →  []const u8 (ISO 8601 string)
 Optional<T>                  →  ?T
-List<T>, ArrayList<T>        →  []T (allocator required for mutable)
-Map<K,V>, HashMap<K,V>       →  std.StringHashMap(V) (keys always []const u8)
-Set<T>, HashSet<T>           →  std.AutoHashMap(T, void)
-CompletableFuture<T>         →  EventBus publish/subscribe pattern
-Stream<T>                    →  []T (materialize to slice first)
-Page<T> (Spring Data)        →  data.orm.PageResult(T) (zmodu generated)
+List<T>, ArrayList<T>        →  []T
+Map<K,V>, HashMap<K,V>       →  std.StringHashMap(V)
+Page<T> (Spring Data)        →  data.orm.PageResult(T)
 ResponseEntity<T>            →  ctx.jsonStruct(status, value)
-```
 
-```
 PHP               →  Zig
 ───────────────────────────
 string            →  []const u8
@@ -56,12 +49,8 @@ int               →  i64
 float             →  f64
 bool              →  bool
 ?Type / null      →  ?Type
-array             →  []T  or  std.StringHashMap(V)
-Collection        →  []T
-Carbon\Carbon     →  []const u8
-```
+array             →  []T or std.StringHashMap(V)
 
-```
 Go                →  Zig
 ───────────────────────────
 string            →  []const u8
@@ -75,7 +64,7 @@ time.Time         →  []const u8
 error             →  !T (error union)
 ```
 
-## Pattern Translation (Fixed Rules)
+## Pattern Translation
 
 ### @Transactional → repo.transact()
 ```java
@@ -88,84 +77,62 @@ public Order createOrder(OrderRequest req) {
 }
 ```
 ```zig
-// TARGET: service_ext.zig
-// [MANUAL] @Transactional with external payment — use SagaOrchestrator
-pub fn createOrder(self: *OrderService, req: OrderRequest) !model.Order {
-    // Multi-step with compensation. See zigmodu.SagaOrchestrator.
-    @compileError("MANUAL: implement with Saga pattern");
+// TARGET: ext/service.zig
+pub fn createOrder(self: *OrderServiceExt, req: OrderRequest) !model.Order {
+    var repo = self.svc.persistence.orderRepo();
+    return repo.transact(model.Order, struct {
+        fn run(tx: *data.orm.Tx(data.SqlxBackend)) !model.Order {
+            _ = tx;
+            // [MANUAL] Multi-step with compensation. Use SagaOrchestrator.
+            @compileError("MANUAL: implement with Saga pattern");
+        }
+    }.run);
 }
 ```
 
 ### @Cacheable → CacheManager
-```java
-// SOURCE
-@Cacheable(value = "products", key = "#id")
-public Product getProduct(Long id) { ... }
-```
 ```zig
-// TARGET
-pub fn getProduct(self: *ProductService, cache: *zigmodu.data.CacheManager, id: i64) !?model.Product {
-    const key = try std.fmt.allocPrint(self.allocator, "products:{}", .{id});
-    defer self.allocator.free(key);
-    if (cache.get(key)) |cached| return parseProduct(cached); // [AUTO]
-    const result = try self.persistence.productRepo().findById(id);
+// ext/service.zig
+pub fn getProduct(self: *ProductServiceExt, cache: *zigmodu.data.CacheManager, id: i64) !?model.Product {
+    const key = try std.fmt.allocPrint(self.svc.allocator, "products:{d}", .{id});
+    defer self.svc.allocator.free(key);
+    if (cache.get(key)) |cached| return parseJson(model.Product, cached); // [AUTO]
+    const result = try self.svc.persistence.productRepo().findById(id);
     if (result) |p| {
-        const json = try std.json.stringifyAlloc(self.allocator, p, .{});
-        defer self.allocator.free(json);
-        try cache.set(key, json, 300); // TTL 5min
+        const json = try std.json.Stringify.valueAlloc(self.svc.allocator, p, .{});
+        defer self.svc.allocator.free(json);
+        try cache.set(key, json, 300);
     }
     return result;
 }
 ```
 
 ### @Async / CompletableFuture → EventBus
-```java
-// SOURCE
-@Async
-public CompletableFuture<Void> sendEmail(Email email) { ... }
-```
 ```zig
-// TARGET
-// [AUTO] Async → EventBus
-pub fn onOrderCreated(self: *EmailService, event: order.OrderEvent) void {
+// ext/service.zig
+pub fn onOrderCreated(self: *EmailServiceExt, event: order.OrderEvent) void {
     if (event == .order_created) {
-        // self.sendEmail(event.order_created.id);
         // triggered by EventBus, no return value needed
     }
 }
 ```
 
-### Validation Annotations → explicit checks
-```java
-// SOURCE
-@NotNull @Size(min=1, max=100) private String name;
-@Min(0) private int quantity;
-```
+### Validation → explicit checks
 ```zig
-// TARGET: place in service_ext.zig create method
-pub fn validateOrder(self: *OrderService, req: OrderRequest) !void {
+// ext/service.zig
+pub fn validateOrder(self: *OrderServiceExt, req: OrderRequest) !void {
     if (req.name.len == 0 or req.name.len > 100) return error.InvalidName;
     if (req.quantity < 0) return error.InvalidQuantity;
 }
 ```
 
 ### Exception → Error Union
-```java
-// SOURCE
-throw new BusinessException("Product not found");
-throw new InsufficientStockException(prodId, requested, available);
-```
 ```zig
-// TARGET
 return error.ProductNotFound;
 return error.InsufficientStock;
-// Define custom errors in module:
-pub const OrderError = error{ ProductNotFound, InsufficientStock, PaymentFailed };
 ```
 
 ## Output File Format
-
-Every `_ext.zig` file follows this structure:
 
 ```zig
 //! Custom business logic for <module> — survives zmodu regeneration.
@@ -174,8 +141,8 @@ Every `_ext.zig` file follows this structure:
 
 const std = @import("std");
 const zigmodu = @import("zigmodu");
-const service = @import("service.zig");
-const model = @import("model.zig");
+const service = @import("../service.zig");  // parent dir
+const model = @import("../model.zig");
 
 pub const OrderServiceExt = struct {
     svc: *service.OrderService,
@@ -184,20 +151,15 @@ pub const OrderServiceExt = struct {
         return .{ .svc = svc };
     }
 
-    // ── [AUTO] ──
-    // methods automatically translated, no human review needed
+    // ── [AUTO] ── (direct translations, no review needed)
 
-    // ── [REVIEW] ──
-    // methods translated, need human confirmation of business rules
+    // ── [REVIEW] ── (translated but need human confirmation)
 
-    // ── [MANUAL] ──
-    // skeletons only, must be rewritten with Saga/EventBus patterns
+    // ── [MANUAL] ── (skeletons, must be rewritten)
 };
 ```
 
 ## Translation Checklist (AI runs per file)
-
-After translating each source file:
 
 ```
 □ Count: total methods in source file
@@ -205,16 +167,14 @@ After translating each source file:
 □ Count: [REVIEW] translated
 □ Count: [MANUAL] skeleton
 □ Verify: zig build passes
-□ Report: "X.java → service_ext.zig: 12 methods, 8 [AUTO], 3 [REVIEW], 1 [MANUAL]"
+□ Report: "X.java → ext/service.zig: 12 methods, 8 [AUTO], 3 [REVIEW], 1 [MANUAL]"
 ```
 
 ## Batch Translation Priority
 
-Translate in this order (most impact first):
-
-1. Controllers with @GetMapping/@PostMapping → api_ext.zig (route differences)
-2. Services with @Transactional → service_ext.zig (business logic)
-3. Services with @Cacheable → service_ext.zig (caching layer)
+1. Controllers → ext/api.zig (route differences)
+2. Services with @Transactional → ext/service.zig (business logic)
+3. Services with @Cacheable → ext/service.zig (caching)
 4. EventListeners → EventBus subscribers
-5. @Scheduled methods → cron module or separate scheduler
-6. Configuration classes → ExternalizedConfig
+5. @Scheduled → cron module
+6. Configuration → ExternalizedConfig

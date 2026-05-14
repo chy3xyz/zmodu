@@ -1,35 +1,28 @@
 ---
 name: zigmodu-life
-description: Project digital life system. Read/write .life/ evolutionary memory. Use when first touching a project or recording milestone decisions.
+description: Project digital life system. Use zmodu life CLI for all .life/ operations. Read .life/ on first contact. Record decisions via JSONL. Evolve milestones via tree/.
 ---
 
-# Digital Life — Project Evolutionary Memory
+# Digital Life — Use CLI, not manual file ops
 
-## First Contact Protocol
-AI MUST read .life/ before any code change:
-1. Read .life/DNA.md → understand project origin
-2. Read .life/manifest.json → know capabilities
-3. Read .life/tree/ latest → see evolution state
-4. Read .life/memory/decisions.jsonl → understand past choices
-
-## After Every Code Change
+## First Contact (BEFORE any code change)
 ```bash
-echo '{{"time":"...","type":"FEAT|FIX|ARCH","decision":"<what>","reason":"<why>"}}' >> .life/memory/decisions.jsonl
+cat .life/DNA.md && zmodu life tree && cat .life/memory/decisions.jsonl
 ```
 
-## Milestone Recording
+## Record Decision (after every code change)
 ```bash
-# Create new tree/ entry when significant evolution occurs
-cat > .life/tree/v0.2.0.md << 'EOF'
-# v0.2.0 — <title>
-## Changes: <summary>
-## New Capabilities: <list>
-## Fingerprint: <sha256>
-EOF
+echo '{{"t":"FEAT|FIX|ARCH|PERF|SEC","d":"<what>","r":"<why>","f":["<file>"]}}' >> .life/memory/decisions.jsonl
 ```
 
-## Fingerprint
+## Record Milestone
 ```bash
-cat .life/DNA.md .life/manifest.json .life/tree/*.md .life/memory/*.jsonl | sha256sum > .life/fingerprint.sha256
+zmodu life evolve v0.2.0 "order state machine complete"
+zmodu life tree        # verify
+zmodu life fingerprint  # verify fingerprint changed
 ```
-Fingerprint changes = project evolved.
+
+## NEVER do this
+`vim .life/tree/v0.2.0.md`  → use `zmodu life evolve`
+`echo "x" > .life/fingerprint.sha256` → use `zmodu life fingerprint`
+`rm .life/*` → never delete evolutionary memory

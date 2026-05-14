@@ -5,6 +5,7 @@ pub const sqlx_model_header = @embedFile("templates/orm/sqlx/model_header.zig.tp
 pub const sqlx_persistence_header = @embedFile("templates/orm/sqlx/persistence_header.zig.tpl");
 pub const sqlx_persistence_footer = @embedFile("templates/orm/sqlx/persistence_footer.zig.tpl");
 pub const sqlx_service_header = @embedFile("templates/orm/sqlx/service_header.zig.tpl");
+pub const sqlx_service_header_noev = @embedFile("templates/orm/sqlx/service_header_noev.zig.tpl");
 pub const sqlx_service_footer = @embedFile("templates/orm/sqlx/service_footer.zig.tpl");
 pub const sqlx_api_header = @embedFile("templates/orm/sqlx/api_header.zig.tpl");
 pub const sqlx_api_footer = @embedFile("templates/orm/sqlx/api_footer.zig.tpl");
