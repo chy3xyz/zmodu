@@ -380,7 +380,7 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu v0.10.1", .{});
+    std.log.info("zmodu v0.10.3", .{});
 }
 
 fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -627,7 +627,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         \\# Project AI Context
         \\
         \\## Stack
-        \\- Framework: zmodu v0.10.0 (Zig 0.16.0)
+        \\- Framework: zmodu v0.10.3 (Zig 0.16.0)
         \\- Database: MySQL/PostgreSQL/SQLite via sqlx
         \\- HTTP: zigmodu.http.Server (async fiber-based)
         \\
@@ -4153,7 +4153,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         \\# Project AI Context
         \\
         \\## Stack
-        \\- Framework: zmodu v0.10.0 (Zig 0.16.0)
+        \\- Framework: zmodu v0.10.3 (Zig 0.16.0)
         \\- Database: MySQL/PostgreSQL/SQLite via sqlx
         \\- HTTP: zigmodu.http.Server (async fiber-based)
         \\
