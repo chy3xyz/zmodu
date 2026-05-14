@@ -391,7 +391,7 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
     _ = args;
     std.log.info("Upgrading zmodu from source...", .{});
 
-    // git pull
+    // git pull (current directory assumed to be zmodu source repo)
     const pull_result = try std.process.run(allocator, io, .{
         .argv = &.{ "git", "pull", "origin", "main" },
     });
@@ -414,8 +414,7 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
         return error.UpgradeFailed;
     }
 
-    std.log.info("zmodu upgraded successfully. New binary at zig-out/bin/zmodu", .{});
-    std.log.info("Run: cp zig-out/bin/zmodu /usr/local/bin/zmodu   (or your install path)", .{});
+    std.log.info("zmodu upgraded. Install: cp zig-out/bin/zmodu ~/.local/bin/zmodu", .{});
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
