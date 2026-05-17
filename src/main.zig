@@ -2650,12 +2650,11 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         const plural_name = try pluralizeRoute(allocator, snake_name);
         defer allocator.free(plural_name);
 
-        const pl_sfx = if (std.mem.endsWith(u8, model_name, "s") or std.mem.endsWith(u8, model_name, "S")) "" else "s";
-        try buf.print(allocator, "        try group.get(\"/{s}\", list{s}{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name, pl_sfx });
-        try buf.print(allocator, "        try group.get(\"/{s}/{{id}}\", get{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.post(\"/{s}\", create{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.put(\"/{s}/{{id}}\", update{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.delete(\"/{s}/{{id}}\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}/list\", list{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}/get\", get{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.post(\"/{s}/create\", create{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.put(\"/{s}/update\", update{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        try buf.print(allocator, "        try group.delete(\"/{s}/delete\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
     }
     try buf.appendSlice(allocator, "    }\n\n");
 
@@ -2666,63 +2665,62 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             table.name;
         const model_name = try toPascalCase(allocator, effective_name);
         defer allocator.free(model_name);
-        const pl_sfx2 = if (std.mem.endsWith(u8, model_name, "s") or std.mem.endsWith(u8, model_name, "S")) "" else "s";
         const pk_is_str2 = pkIsString(table);
 
-        // list
-        try buf.print(allocator, "    fn list{s}{s}(ctx: *http.Context) !void {{\n", .{model_name, pl_sfx2});
+        // list — GET /{plural}/list
+        try buf.print(allocator, "    fn list{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.appendSlice(allocator, "        const page = ctx.queryInt(usize, \"page\", 0);\n");
         try buf.appendSlice(allocator, "        const size = ctx.queryInt(usize, \"size\", 10);\n");
-        try buf.print(allocator, "        const result = try s.service.list{s}{s}(page, size);\n", .{model_name, pl_sfx2});
-        try buf.appendSlice(allocator, "        try ctx.jsonStruct(200, result);\n");
+        try buf.print(allocator, "        const result = try s.service.list{s}(page, size);\n", .{model_name});
+        try buf.appendSlice(allocator, "        try wrapList(ctx, result);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        // get
+        // get — GET /{plural}/get?id=xxx
         try buf.print(allocator, "    fn get{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         if (pk_is_str2) {
             try buf.appendSlice(allocator, "        const id = try ctx.paramStr(\"id\");\n");
         } else {
-            try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+            try buf.appendSlice(allocator, "        const id = try ctx.queryInt(i64, \"id\", 0);\n");
         }
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.jsonStruct(200, entity);\n");
-        try buf.appendSlice(allocator, "        } else { try ctx.json(404, \"{\\\"error\\\":\\\"not found\\\"}\"); }\n");
+        try buf.appendSlice(allocator, "            try wrapOk(ctx, entity);\n");
+        try buf.appendSlice(allocator, "        } else { try wrapErr(ctx, 1, \"not found\"); }\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        // create
+        // create — POST /{plural}/create
         try buf.print(allocator, "    fn create{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
         try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
         try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try ctx.jsonStruct(201, created);\n");
+        try buf.appendSlice(allocator, "        try wrapOk(ctx, created);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        // update
+        // update — PUT /{plural}/update
         try buf.print(allocator, "    fn update{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"error\\\":\\\"invalid body\\\"}\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
         try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try ctx.json(400, \"{\\\"err\\\":\\\"validation failed\\\"}\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
         try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try http.RenderExt.success(ctx, \"ok\");\n");
+        try buf.appendSlice(allocator, "        try wrapSuccess(ctx);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
-        // delete
+        // delete — DELETE /{plural}/delete?id=xxx
         try buf.print(allocator, "    fn delete{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         if (pk_is_str2) {
             try buf.appendSlice(allocator, "        const id = try ctx.paramStr(\"id\");\n");
         } else {
-            try buf.appendSlice(allocator, "        const id = try ctx.paramInt(i64, \"id\");\n");
+            try buf.appendSlice(allocator, "        const id = try ctx.queryInt(i64, \"id\", 0);\n");
         }
         try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try ctx.json(204, \"\");\n");
+        try buf.appendSlice(allocator, "        try wrapSuccess(ctx);\n");
         try buf.appendSlice(allocator, "    }\n\n");
     }
 

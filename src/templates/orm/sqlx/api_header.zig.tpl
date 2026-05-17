@@ -8,6 +8,26 @@ const http = @import("zigmodu").http;
 const service = @import("service.zig");
 const model = @import("model.zig");
 
+// ── RuoYi-style response helpers ──
+fn wrapOk(ctx: *http.Context, value: anytype) !void {
+    const json = try std.fmt.allocPrint(ctx.allocator, "{{\"code\":0,\"msg\":\"\",\"data\":{any}}}", .{std.json.fmt(value, .{})});
+    defer ctx.allocator.free(json);
+    try ctx.json(200, json);
+}
+fn wrapList(ctx: *http.Context, result: anytype) !void {
+    const json = try std.fmt.allocPrint(ctx.allocator, "{{\"code\":0,\"msg\":\"\",\"data\":{{\"list\":{any},\"total\":{d}}}}}", .{std.json.fmt(result.items, .{}), result.total});
+    defer ctx.allocator.free(json);
+    try ctx.json(200, json);
+}
+fn wrapSuccess(ctx: *http.Context) !void {
+    try ctx.json(200, "{\"code\":0,\"msg\":\"\",\"data\":null}");
+}
+fn wrapErr(ctx: *http.Context, errcode: i32, errmsg: []const u8) !void {
+    const json = try std.fmt.allocPrint(ctx.allocator, "{{\"code\":{d},\"msg\":\"{s}\",\"data\":null}}", .{errcode, errmsg});
+    defer ctx.allocator.free(json);
+    try ctx.json(200, json);
+}
+
 pub const <<PASCAL_MODULE>>Api = struct {
     service: *service.<<PASCAL_MODULE>>Service,
 
