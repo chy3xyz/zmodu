@@ -10,6 +10,7 @@ const Command = enum {
     orm,
     generate,
     scaffold,
+    add,
     migration,
     health,
     config,
@@ -202,6 +203,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .orm => try cmdOrm(io, allocator, cmd_args),
         .generate => try cmdGenerate(io, allocator, cmd_args),
         .scaffold => try cmdScaffold(io, allocator, cmd_args),
+        .add => try cmdAdd(io, allocator, cmd_args),
         .migration => try cmdMigration(io, allocator, cmd_args),
         .health => try cmdHealth(io, allocator, cmd_args),
         .config => try cmdConfig(io, allocator, cmd_args),
@@ -307,6 +309,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "orm")) return .orm;
     if (std.mem.eql(u8, cmd, "generate")) return .generate;
     if (std.mem.eql(u8, cmd, "scaffold")) return .scaffold;
+    if (std.mem.eql(u8, cmd, "add")) return .add;
     if (std.mem.eql(u8, cmd, "migration")) return .migration;
     if (std.mem.eql(u8, cmd, "migrate")) return .migration;
     if (std.mem.eql(u8, cmd, "health")) return .health;
@@ -4743,6 +4746,271 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
     const opencode_rm_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{opencode_dir});
     defer allocator.free(opencode_rm_path);
     try writeFileGen(io, opencode_rm_path, opencode_readme, gen_opts);
+}
+
+// ── add: append new modules to existing project ──────────────────
+
+fn cmdAdd(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    var sql_path: ?[]const u8 = null;
+    var force: bool = false;
+    var dry_run: bool = false;
+    var json_style: JsonStyle = .snake;
+
+    var i: usize = 0;
+    while (i < args.len) : (i += 1) {
+        if (std.mem.eql(u8, args[i], "--sql")) {
+            if (i + 1 >= args.len) return error.CliUsage;
+            sql_path = args[i + 1]; i += 1;
+        } else if (std.mem.eql(u8, args[i], "--force")) {
+            force = true;
+        } else if (std.mem.eql(u8, args[i], "--dry-run")) {
+            dry_run = true;
+        } else if (std.mem.eql(u8, args[i], "--json-style")) {
+            if (i + 1 >= args.len) return error.CliUsage;
+            if (std.mem.eql(u8, args[i + 1], "camel")) json_style = .camel;
+            i += 1;
+        } else {
+            std.log.err("Unknown option: {s}", .{args[i]});
+            return error.CliUsage;
+        }
+    }
+    if (sql_path == null) {
+        std.log.err("zmodu add requires --sql <file>", .{});
+        return error.CliUsage;
+    }
+    const gen_opts: GenOptions = .{ .dry_run = dry_run, .force = force, .json_style = json_style };
+
+    // 1. Read and parse SQL
+    const sql_content = std.Io.Dir.cwd().readFileAlloc(io, sql_path.?, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
+        std.log.err("Cannot read SQL file '{s}': {s}", .{ sql_path.?, @errorName(err) });
+        return err;
+    };
+    defer allocator.free(sql_content);
+
+    const sql_for_parse = stripUtf8BomAndTrimSql(sql_content);
+    if (sql_for_parse.len == 0) return error.CliUsage;
+
+    const tables = parseSqlSchema(allocator, sql_for_parse) catch |err| {
+        std.log.err("Failed to parse SQL: {s}", .{@errorName(err)});
+        return err;
+    };
+    defer {
+        for (tables) |t| {
+            allocator.free(t.name);
+            for (t.columns) |c| { allocator.free(c.name); if (c.comment) |com| allocator.free(com); }
+            allocator.free(t.columns);
+            for (t.foreign_keys) |fk| { allocator.free(fk.column_name); allocator.free(fk.ref_table); allocator.free(fk.ref_column); }
+            allocator.free(t.foreign_keys);
+        }
+        allocator.free(tables);
+    }
+    if (tables.len == 0) return error.CliUsage;
+    std.log.info("Adding {d} table(s) from {s}", .{ tables.len, sql_path.? });
+
+    // 2. Group tables into modules + detect subsystems
+    var module_map = try groupTablesByModule(allocator, tables);
+    defer {
+        var iter = module_map.iterator();
+        while (iter.next()) |entry| {
+            entry.value_ptr.deinit(allocator);
+            allocator.free(entry.key_ptr.*);
+        }
+        module_map.deinit();
+    }
+    _ = try detectSubsystems(allocator, &module_map);
+
+    // Collect module names
+    var module_names = std.ArrayList([]const u8).empty;
+    defer module_names.deinit(allocator);
+    {
+        var iter = module_map.iterator();
+        while (iter.next()) |entry| try module_names.append(allocator, entry.key_ptr.*);
+        std.mem.sort([]const u8, module_names.items, {}, struct {
+            fn lt(_: void, a: []const u8, b: []const u8) bool { return std.mem.lessThan(u8, a, b); }
+        }.lt);
+    }
+
+    // 3. Generate module files under src/modules/
+    const modules_dir = "src/modules";
+    const scaffold_prefix_len = commonTablePrefix(tables);
+    for (module_names.items) |mod_name| {
+        const tables_for_mod = module_map.get(mod_name).?;
+        try writeModuleFiles(io, allocator, modules_dir, mod_name, tables_for_mod.items, gen_opts, scaffold_prefix_len);
+
+        // ext/ directory
+        const ext_dir = try std.fmt.allocPrint(allocator, "{s}/{s}/ext", .{ modules_dir, mod_name });
+        defer allocator.free(ext_dir);
+        try ensureDirGen(io, ext_dir, gen_opts);
+
+        const var_name_tmp = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name_tmp);
+        const pascal_mod = try toPascalCase(allocator, var_name_tmp);
+        defer allocator.free(pascal_mod);
+
+        const ext_svc = try std.fmt.allocPrint(allocator,
+            \\// {s} service extension — survives zmodu regeneration.
+            \\const std = @import("std");
+            \\const zigmodu = @import("zigmodu");
+            \\const svc = @import("../service.zig");
+            \\pub const {s}ServiceExt = struct {{
+            \\    svc: *svc.{s}Service;
+            \\    pub fn init(s: *svc.{s}Service) @This() {{ return .{{ .svc = s }}; }}
+            \\}};
+        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod });
+        defer allocator.free(ext_svc);
+        const ext_svc_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{ext_dir});
+        defer allocator.free(ext_svc_path);
+        try writeFileGen(io, ext_svc_path, ext_svc, gen_opts);
+
+        const ext_api = try std.fmt.allocPrint(allocator,
+            \\// {s} custom API endpoints — survives zmodu regeneration.
+            \\const std = @import("std");
+            \\const zigmodu = @import("zigmodu");
+            \\const ext_svc = @import("service.zig");
+            \\pub const {s}ApiExt = struct {{
+            \\    ext: *ext_svc.{s}ServiceExt;
+            \\    pub fn init(e: *ext_svc.{s}ServiceExt) @This() {{ return .{{ .ext = e }}; }}
+            \\    pub fn registerRoutes(self: *@This(), group: *zigmodu.http.RouteGroup) !void {{ _ = self; _ = group; }}
+            \\}};
+        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod });
+        defer allocator.free(ext_api);
+        const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ext_dir});
+        defer allocator.free(ext_api_path);
+        try writeFileGen(io, ext_api_path, ext_api, gen_opts);
+
+        std.log.info("Added module '{s}' at src/modules/{s}/", .{ mod_name, mod_name });
+    }
+
+    // 4. Wire into main.zig
+    if (!dry_run) {
+        try wireModulesIntoMainZig(io, allocator, module_names.items);
+    }
+
+    std.log.info("add complete: {d} table(s) → {d} module(s)", .{ tables.len, module_names.items.len });
+}
+
+/// Append module imports + wiring to an existing main.zig using anchor comments.
+fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules: []const []const u8) !void {
+    const main_path = "src/main.zig";
+    const main_content = std.Io.Dir.cwd().readFileAlloc(io, main_path, allocator, std.Io.Limit.limited(10 * 1024 * 1024)) catch {
+        std.log.err("Cannot read {s} — wiring skipped. Update manually.", .{main_path});
+        return;
+    };
+    defer allocator.free(main_content);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
+    var lines = std.mem.splitScalar(u8, main_content, '\n');
+
+    // State machine: insert wiring at the right anchor points
+    var inserted_import = false;
+    var inserted_persistence = false;
+    var inserted_service = false;
+    var inserted_api = false;
+    var inserted_routes = false;
+    var inserted_lifecycle = false;
+
+    while (lines.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t");
+
+        // Insert imports before pub fn main (after last module import)
+        if (!inserted_import and std.mem.startsWith(u8, trimmed, "pub fn main")) {
+            inserted_import = true;
+            for (new_modules) |mod_name| {
+                const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                defer allocator.free(var_name);
+                try out.print(allocator, "const {s} = @import(\"modules/{s}/module.zig\");\n", .{ var_name, mod_name });
+            }
+            try out.append(allocator, '\n');
+        }
+
+        // Insert persistence after the anchor comment
+        if (!inserted_persistence and std.mem.eql(u8, trimmed, "// -- Persistence --")) {
+            try out.appendSlice(allocator, line);
+            try out.append(allocator, '\n');
+            inserted_persistence = true;
+            for (new_modules) |mod_name| {
+                const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                defer allocator.free(var_name);
+                const pascal = try toPascalCase(allocator, var_name);
+                defer allocator.free(pascal);
+                try out.print(allocator, "    var {s}_p = {s}.persistence.{s}Persistence.init(backend);\n", .{ var_name, var_name, pascal });
+            }
+            continue;
+        }
+
+        // Insert service after anchor
+        if (!inserted_service and std.mem.eql(u8, trimmed, "// -- Service --")) {
+            try out.appendSlice(allocator, line);
+            try out.append(allocator, '\n');
+            inserted_service = true;
+            for (new_modules) |mod_name| {
+                const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                defer allocator.free(var_name);
+                const pascal = try toPascalCase(allocator, var_name);
+                defer allocator.free(pascal);
+                try out.print(allocator, "    var {s}_svc = {s}.service.{s}Service.init(&{s}_p);\n", .{ var_name, var_name, pascal, var_name });
+            }
+            continue;
+        }
+
+        // Insert API after anchor
+        if (!inserted_api and std.mem.eql(u8, trimmed, "// -- API --")) {
+            try out.appendSlice(allocator, line);
+            try out.append(allocator, '\n');
+            inserted_api = true;
+            for (new_modules) |mod_name| {
+                const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                defer allocator.free(var_name);
+                const pascal = try toPascalCase(allocator, var_name);
+                defer allocator.free(pascal);
+                try out.print(allocator, "    var {s}_api = {s}.api.{s}Api.init(&{s}_svc);\n", .{ var_name, var_name, pascal, var_name });
+            }
+            continue;
+        }
+
+        // Insert routes after last _api.registerRoutes, before // -- Lifecycle --
+        if (!inserted_routes and std.mem.eql(u8, trimmed, "// -- Lifecycle --")) {
+            inserted_routes = true;
+            for (new_modules) |mod_name| {
+                const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                defer allocator.free(var_name);
+                try out.print(allocator, "    try {s}_api.registerRoutes(&root);\n", .{var_name});
+            }
+            try out.append(allocator, '\n');
+        }
+
+        // Insert lifecycle module names into Application.init tuple
+        if (!inserted_lifecycle and std.mem.indexOf(u8, trimmed, "Application.init") != null and std.mem.indexOf(u8, trimmed, ".{ ") != null) {
+            // Insert new module names before the closing "}, .{});"
+            var mod_before = line;
+            var mod_after: []const u8 = undefined;
+            if (std.mem.indexOf(u8, line, "}, .{});")) |idx| {
+                mod_before = line[0..idx];
+                mod_after = line[idx..];
+                inserted_lifecycle = true;
+                try out.appendSlice(allocator, mod_before);
+                for (new_modules) |mod_name| {
+                    const var_name = try replaceChar(allocator, mod_name, '/', '_');
+                    defer allocator.free(var_name);
+                    try out.print(allocator, " {s},", .{var_name});
+                }
+                try out.appendSlice(allocator, mod_after);
+                try out.append(allocator, '\n');
+                continue;
+            }
+        }
+
+        try out.appendSlice(allocator, line);
+        try out.append(allocator, '\n');
+    }
+
+    // Write back
+    const file = try std.Io.Dir.cwd().createFile(io, main_path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, out.items);
+
+    std.log.info("Wired {d} module(s) into {s}", .{ new_modules.len, main_path });
 }
 
 fn isZigReserved(name: []const u8) bool {
