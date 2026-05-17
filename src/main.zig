@@ -3816,11 +3816,22 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         if (!fileExists(io, ext_svc_path)) try writeFileGen(io, ext_svc_path, ext_svc, gen_opts);
 
         // Generate ext/api.zig template per module
+        // Compute shared response.zig path for ext/ (one level deeper than API)
+        var ext_depth: usize = 3;
+        for (mod_name) |c| { if (c == '/') ext_depth += 1; }
+        var ext_path_buf = std.ArrayList(u8).empty;
+        defer ext_path_buf.deinit(allocator);
+        var ext_di: usize = 0;
+        while (ext_di < ext_depth) : (ext_di += 1) { try ext_path_buf.appendSlice(allocator, "../"); }
+        try ext_path_buf.appendSlice(allocator, "shared/response.zig");
+        const shared_ext_import = ext_path_buf.items;
+
         const ext_api = try std.fmt.allocPrint(allocator,
             \\// {s} custom API endpoints — add business routes here.
             \\// Survives zmodu regeneration.
             \\const std = @import("std");
             \\const zigmodu = @import("zigmodu");
+            \\const R = @import("{s}");
             \\const ext_svc = @import("service.zig");
             \\
             \\pub const {s}ApiExt = struct {{
@@ -3833,10 +3844,6 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http.RouteGroup) !void {{
             \\        const p = "/{s}";
             \\        try group.get(p ++ "/page", hPage, @ptrCast(@alignCast(self)));
-            \\        try group.get(p ++ "/get", hGet, @ptrCast(@alignCast(self)));
-            \\        try group.post(p ++ "/create", hCreate, @ptrCast(@alignCast(self)));
-            \\        try group.put(p ++ "/update", hUpdate, @ptrCast(@alignCast(self)));
-            \\        try group.delete(p ++ "/delete", hDelete, @ptrCast(@alignCast(self)));
             \\        try group.delete(p ++ "/delete-list", hDeleteList, @ptrCast(@alignCast(self)));
             \\        try group.get(p ++ "/list-all-simple", hSimple, @ptrCast(@alignCast(self)));
             \\        try group.get(p ++ "/export-excel", hExport, @ptrCast(@alignCast(self)));
@@ -3846,21 +3853,17 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        return @ptrCast(@alignCast(ctx.user_data orelse unreachable));
             \\    }}
             \\
-            \\    fn hPage(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hGet(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hCreate(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hUpdate(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hDelete(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hDeleteList(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hSimple(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
-            \\    fn hExport(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hPage(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
+            \\    fn hDeleteList(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
+            \\    fn hSimple(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
+            \\    fn hExport(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
             \\}};
             \\
-        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod });
+        , .{ mod_name, shared_ext_import, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod });
         defer allocator.free(ext_api);
-        const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
-        defer allocator.free(ext_api_path);
-        if (!fileExists(io, ext_api_path)) try writeFileGen(io, ext_api_path, ext_api, gen_opts);
+    const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
+    defer allocator.free(ext_api_path);
+    if (!fileExists(io, ext_api_path)) try writeFileGen(io, ext_api_path, ext_api, gen_opts);
     }
 
     // 4.5 Generate marketing module group (--with-marketing)
