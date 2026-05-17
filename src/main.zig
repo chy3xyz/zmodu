@@ -1193,6 +1193,12 @@ fn ensureDirGen(io: std.Io, path: []const u8, opts: GenOptions) !void {
     try std.Io.Dir.cwd().createDirPath(io, path);
 }
 
+fn fileExists(io: std.Io, path: []const u8) bool {
+    const f = std.Io.Dir.cwd().openFile(io, path, .{}) catch return false;
+    f.close(io);
+    return true;
+}
+
 fn writeFileGen(io: std.Io, path: []const u8, content: []const u8, opts: GenOptions) !void {
     if (opts.dry_run) {
         std.log.info("[dry-run] write {s} ({d} bytes)", .{ path, content.len });
@@ -2636,7 +2642,17 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
     defer allocator.free(pascal_module);
     const header = try orm_tpl.expandOrm(allocator, orm_tpl.sqlx_api_header, module_name, pascal_module);
     defer allocator.free(header);
-    try buf.appendSlice(allocator, header);
+    // Compute shared/ import path: flat → ../../shared, nested → ../../../shared, etc.
+    var sp_depth: usize = 2;
+    for (module_name) |c| { if (c == '/') sp_depth += 1; }
+    var sp_buf = std.ArrayList(u8).empty;
+    defer sp_buf.deinit(allocator);
+    var sp_i: usize = 0;
+    while (sp_i < sp_depth) : (sp_i += 1) { try sp_buf.appendSlice(allocator, "../"); }
+    try sp_buf.appendSlice(allocator, "shared/");
+    const header_with_shared = try replaceAllStr(allocator, header, "<<SHARED_IMPORT>>", sp_buf.items);
+    defer allocator.free(header_with_shared);
+    try buf.appendSlice(allocator, header_with_shared);
 
     for (tables) |table| {
         const effective_name = if (strip_prefix_len > 0 and strip_prefix_len < table.name.len)
@@ -2673,7 +2689,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
         try buf.appendSlice(allocator, "        const page = ctx.queryInt(usize, \"page\", 0);\n");
         try buf.appendSlice(allocator, "        const size = ctx.queryInt(usize, \"size\", 10);\n");
         try buf.print(allocator, "        const result = try s.service.list{s}(page, size);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try wrapList(ctx, result);\n");
+        try buf.appendSlice(allocator, "        try R.wrapList(ctx, result);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // get — GET /{plural}/get?id=xxx
@@ -2685,30 +2701,30 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        const id = try ctx.queryInt(i64, \"id\", 0);\n");
         }
         try buf.print(allocator, "        if (try s.service.get{s}(id)) |entity| {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try wrapOk(ctx, entity);\n");
-        try buf.appendSlice(allocator, "        } else { try wrapErr(ctx, 1, \"not found\"); }\n");
+        try buf.appendSlice(allocator, "            try R.wrapOk(ctx, entity);\n");
+        try buf.appendSlice(allocator, "        } else { try R.wrapErr(ctx, 1, \"not found\"); }\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // create — POST /{plural}/create
         try buf.print(allocator, "    fn create{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try R.wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
         try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try R.wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
         try buf.print(allocator, "        const created = try s.service.create{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try wrapOk(ctx, created);\n");
+        try buf.appendSlice(allocator, "        try R.wrapOk(ctx, created);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // update — PUT /{plural}/update
         try buf.print(allocator, "    fn update{s}(ctx: *http.Context) !void {{\n", .{model_name});
         try buf.appendSlice(allocator, "        const s = resolve(ctx);\n");
         try buf.print(allocator, "        const entity = ctx.bindJson(model.{s}) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try R.wrapErr(ctx, 1, \"invalid body\");\n            return;\n        };\n");
         try buf.print(allocator, "        s.service.validate{s}(entity) catch {{\n", .{model_name});
-        try buf.appendSlice(allocator, "            try wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
+        try buf.appendSlice(allocator, "            try R.wrapErr(ctx, 1, \"validation failed\");\n            return;\n        };\n");
         try buf.print(allocator, "        try s.service.update{s}(entity);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try wrapSuccess(ctx);\n");
+        try buf.appendSlice(allocator, "        try R.wrapSuccess(ctx);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         // delete — DELETE /{plural}/delete?id=xxx
@@ -2720,7 +2736,7 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             try buf.appendSlice(allocator, "        const id = try ctx.queryInt(i64, \"id\", 0);\n");
         }
         try buf.print(allocator, "        try s.service.delete{s}(id);\n", .{model_name});
-        try buf.appendSlice(allocator, "        try wrapSuccess(ctx);\n");
+        try buf.appendSlice(allocator, "        try R.wrapSuccess(ctx);\n");
         try buf.appendSlice(allocator, "    }\n\n");
     }
 
@@ -3795,7 +3811,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         defer allocator.free(ext_svc);
         const ext_svc_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{ ext_dir });
         defer allocator.free(ext_svc_path);
-        try writeFileGen(io, ext_svc_path, ext_svc, gen_opts);
+        if (!fileExists(io, ext_svc_path)) try writeFileGen(io, ext_svc_path, ext_svc, gen_opts);
 
         // Generate ext/api.zig template per module
         const ext_api = try std.fmt.allocPrint(allocator,
@@ -3824,7 +3840,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         defer allocator.free(ext_api);
         const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
         defer allocator.free(ext_api_path);
-        try writeFileGen(io, ext_api_path, ext_api, gen_opts);
+        if (!fileExists(io, ext_api_path)) try writeFileGen(io, ext_api_path, ext_api, gen_opts);
     }
 
     // 4.5 Generate marketing module group (--with-marketing)
@@ -4054,34 +4070,15 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(shared_errors_path);
     try writeFileGen(io, shared_errors_path, shared_errors, gen_opts);
 
-    // shared/response.zig — uniform API response wrapper
-    const shared_response = try std.fmt.allocPrint(allocator,
-        \\//! Uniform API response wrapper.
-        \\//! Usage: try ctx.jsonStruct(200, response.wrap(data));
-        \\const std = @import("std");
-        \\const zigmodu = @import("zigmodu");
-        \\
-        \\pub fn ApiResponse(comptime T: type) type {{
-        \\    return struct {{
-        \\        code: i32 = 0,
-        \\        message: []const u8 = "success",
-        \\        data: T,
-        \\    }};
-        \\}}
-        \\
-        \\pub fn wrap(data: anytype) ApiResponse(@TypeOf(data)) {{
-        \\    return .{{ .data = data }};
-        \\}}
-        \\
-        \\pub fn ok() ApiResponse(void) {{
-        \\    return .{{ .data = {{}} }};
-        \\}}
-        \\
-        \\pub fn err(code: i32, msg: []const u8) ApiResponse(void) {{
-        \\    return .{{ .code = code, .message = msg, .data = {{}} }};
-        \\}}
-        \\
-    , .{});
+    // shared/response.zig — RuoYi-style API response helpers
+    var shared_buf: std.ArrayList(u8) = .empty;
+    defer shared_buf.deinit(allocator);
+    try shared_buf.appendSlice(allocator, "//! RuoYi-style API response helpers\nconst std = @import(\"std\");\nconst http = @import(\"zigmodu\").http;\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapOk(ctx: *http.Context, value: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, value, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{s}}\", .{inner});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapList(ctx: *http.Context, result: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, result.items, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{\\\"list\\\":{s},\\\"total\\\":{d}}}\", .{inner, result.total});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapSuccess(ctx: *http.Context) !void {\n    try ctx.json(200, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":null}\");\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapErr(ctx: *http.Context, errcode: i32, errmsg: []const u8) !void {\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":{d},\\\"msg\\\":\\\"{s}\\\",\\\"data\\\":null}\", .{errcode, errmsg});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n");
+    const shared_response = try shared_buf.toOwnedSlice(allocator);
     defer allocator.free(shared_response);
     const shared_response_path = try std.fmt.allocPrint(allocator, "{s}/response.zig", .{shared_dir});
     defer allocator.free(shared_response_path);
@@ -4872,7 +4869,7 @@ fn cmdAdd(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         defer allocator.free(ext_api);
         const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ext_dir});
         defer allocator.free(ext_api_path);
-        try writeFileGen(io, ext_api_path, ext_api, gen_opts);
+        if (!fileExists(io, ext_api_path)) try writeFileGen(io, ext_api_path, ext_api, gen_opts);
 
         std.log.info("Added module '{s}' at src/modules/{s}/", .{ mod_name, mod_name });
     }
