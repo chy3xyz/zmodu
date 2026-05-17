@@ -4898,11 +4898,30 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
     };
     defer allocator.free(main_content);
 
+    // Filter: only wire modules that don't already exist in main.zig
+    var to_wire = std.ArrayList([]const u8).empty;
+    defer to_wire.deinit(allocator);
+    for (new_modules) |mod_name| {
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
+        // Check if already wired
+        const import_line = try std.fmt.allocPrint(allocator, "modules/{s}/module.zig", .{mod_name});
+        defer allocator.free(import_line);
+        if (std.mem.indexOf(u8, main_content, import_line) == null) {
+            try to_wire.append(allocator, mod_name);
+        } else {
+            std.log.info("  Module '{s}' already wired — skipping.", .{mod_name});
+        }
+    }
+    if (to_wire.items.len == 0) {
+        std.log.info("All modules already wired. Nothing to do.", .{});
+        return;
+    }
+
     var out = std.ArrayList(u8).empty;
     defer out.deinit(allocator);
     var lines = std.mem.splitScalar(u8, main_content, '\n');
 
-    // State machine: insert wiring at the right anchor points
     var inserted_import = false;
     var inserted_persistence = false;
     var inserted_service = false;
@@ -4913,10 +4932,10 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
     while (lines.next()) |line| {
         const trimmed = std.mem.trim(u8, line, " \t");
 
-        // Insert imports before pub fn main (after last module import)
+        // Insert imports before pub fn main
         if (!inserted_import and std.mem.startsWith(u8, trimmed, "pub fn main")) {
             inserted_import = true;
-            for (new_modules) |mod_name| {
+            for (to_wire.items) |mod_name| {
                 const var_name = try replaceChar(allocator, mod_name, '/', '_');
                 defer allocator.free(var_name);
                 try out.print(allocator, "const {s} = @import(\"modules/{s}/module.zig\");\n", .{ var_name, mod_name });
@@ -4924,12 +4943,12 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
             try out.append(allocator, '\n');
         }
 
-        // Insert persistence after the anchor comment
+        // Insert persistence after anchor
         if (!inserted_persistence and std.mem.eql(u8, trimmed, "// -- Persistence --")) {
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
             inserted_persistence = true;
-            for (new_modules) |mod_name| {
+            for (to_wire.items) |mod_name| {
                 const var_name = try replaceChar(allocator, mod_name, '/', '_');
                 defer allocator.free(var_name);
                 const pascal = try toPascalCase(allocator, var_name);
@@ -4944,7 +4963,7 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
             inserted_service = true;
-            for (new_modules) |mod_name| {
+            for (to_wire.items) |mod_name| {
                 const var_name = try replaceChar(allocator, mod_name, '/', '_');
                 defer allocator.free(var_name);
                 const pascal = try toPascalCase(allocator, var_name);
@@ -4959,7 +4978,7 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
             try out.appendSlice(allocator, line);
             try out.append(allocator, '\n');
             inserted_api = true;
-            for (new_modules) |mod_name| {
+            for (to_wire.items) |mod_name| {
                 const var_name = try replaceChar(allocator, mod_name, '/', '_');
                 defer allocator.free(var_name);
                 const pascal = try toPascalCase(allocator, var_name);
@@ -4969,10 +4988,10 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
             continue;
         }
 
-        // Insert routes after last _api.registerRoutes, before // -- Lifecycle --
+        // Insert routes before // -- Lifecycle --
         if (!inserted_routes and std.mem.eql(u8, trimmed, "// -- Lifecycle --")) {
             inserted_routes = true;
-            for (new_modules) |mod_name| {
+            for (to_wire.items) |mod_name| {
                 const var_name = try replaceChar(allocator, mod_name, '/', '_');
                 defer allocator.free(var_name);
                 try out.print(allocator, "    try {s}_api.registerRoutes(&root);\n", .{var_name});
@@ -4982,15 +5001,13 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
 
         // Insert lifecycle module names into Application.init tuple
         if (!inserted_lifecycle and std.mem.indexOf(u8, trimmed, "Application.init") != null and std.mem.indexOf(u8, trimmed, ".{ ") != null) {
-            // Insert new module names before the closing "}, .{});"
-            var mod_before = line;
-            var mod_after: []const u8 = undefined;
             if (std.mem.indexOf(u8, line, "}, .{});")) |idx| {
-                mod_before = line[0..idx];
-                mod_after = line[idx..];
+                const mod_before = line[0..idx];
+                const mod_after = line[idx..];
                 inserted_lifecycle = true;
                 try out.appendSlice(allocator, mod_before);
-                for (new_modules) |mod_name| {
+                // Trim trailing whitespace from existing modules, add new ones
+                for (to_wire.items) |mod_name| {
                     const var_name = try replaceChar(allocator, mod_name, '/', '_');
                     defer allocator.free(var_name);
                     try out.print(allocator, " {s},", .{var_name});
@@ -5010,7 +5027,7 @@ fn wireModulesIntoMainZig(io: std.Io, allocator: std.mem.Allocator, new_modules:
     defer file.close(io);
     try file.writeStreamingAll(io, out.items);
 
-    std.log.info("Wired {d} module(s) into {s}", .{ new_modules.len, main_path });
+    std.log.info("Wired {d} module(s) into {s}", .{ to_wire.items.len, main_path });
 }
 
 fn isZigReserved(name: []const u8) bool {
