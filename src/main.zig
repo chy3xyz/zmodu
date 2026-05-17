@@ -1558,7 +1558,7 @@ fn commonTablePrefix(tables: []const TableDef) usize {
 
 /// Infer the module name for a table, optionally stripping a common prefix.
 fn inferModuleName(allocator: std.mem.Allocator, table_name: []const u8, strip_prefix_len: usize) ![]const u8 {
-    _ = strip_prefix_len; // Always keep full name; prefix stripping handled by detectSubsystems
+    _ = strip_prefix_len; // Keep full name; subsystem grouping handled by detectSubsystems
     return try allocator.dupe(u8, table_name);
 }
 
@@ -2348,6 +2348,7 @@ fn detectSubsystems(allocator: std.mem.Allocator, module_map: *std.StringHashMap
     var names = std.ArrayList([]const u8).empty;
     defer names.deinit(allocator);
     var kit = module_map.keyIterator();
+    while (kit.next()) |k| try names.append(allocator, k.*);
 
     // Group by first segment (before first '_')
     var prefix_groups = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
@@ -2366,6 +2367,7 @@ fn detectSubsystems(allocator: std.mem.Allocator, module_map: *std.StringHashMap
         else
             name;
         // Only consider as subsystem prefix if the module has an underscore (multi-word)
+        if (first_seg.len < name.len and first_seg.len > 1) {
             const gop = try prefix_groups.getOrPut(try allocator.dupe(u8, first_seg));
             if (!gop.found_existing) {
                 gop.value_ptr.* = .empty;
@@ -2378,6 +2380,7 @@ fn detectSubsystems(allocator: std.mem.Allocator, module_map: *std.StringHashMap
     var subsystem_map = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
     var pit = prefix_groups.iterator();
     while (pit.next()) |entry| {
+        if (entry.value_ptr.items.len >= 1) {
             // This prefix IS a subsystem. Strip prefix from module names.
             var modules = std.ArrayList([]const u8).empty;
             for (entry.value_ptr.items) |full_name| {
@@ -2388,13 +2391,11 @@ fn detectSubsystems(allocator: std.mem.Allocator, module_map: *std.StringHashMap
                 }
                 try modules.append(allocator, try allocator.dupe(u8, remainder));
                 // Move module map entry: old key → "<prefix>/<remainder>"
-                // Use getPtr to avoid ArrayList copy (which shares backing array)
                 if (module_map.getPtr(full_name)) |src_data| {
-                    // Move tables into a new ArrayList under the new key
                     var new_list = std.ArrayList(TableDef).empty;
                     for (src_data.items) |t| try new_list.append(allocator, t);
                     const new_key = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ prefix, remainder });
-                    std.log.info("  new_key={s} tables={d}", .{ new_key, new_list.items.len }); try module_map.put(new_key, new_list);
+                    try module_map.put(new_key, new_list);
                     src_data.deinit(allocator);
                     _ = module_map.remove(full_name);
                 }
