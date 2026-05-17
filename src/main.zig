@@ -3831,14 +3831,32 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    }}
             \\
             \\    pub fn registerRoutes(self: *{s}ApiExt, group: *zigmodu.http.RouteGroup) !void {{
-            \\        _ = self;
-            \\        _ = group;
-            \\        // Add custom routes:
-            \\        // try group.get("/{s}/custom", myHandler, @ptrCast(@alignCast(self)));
+            \\        const p = "/{s}";
+            \\        try group.get(p ++ "/page", hPage, @ptrCast(@alignCast(self)));
+            \\        try group.get(p ++ "/get", hGet, @ptrCast(@alignCast(self)));
+            \\        try group.post(p ++ "/create", hCreate, @ptrCast(@alignCast(self)));
+            \\        try group.put(p ++ "/update", hUpdate, @ptrCast(@alignCast(self)));
+            \\        try group.delete(p ++ "/delete", hDelete, @ptrCast(@alignCast(self)));
+            \\        try group.delete(p ++ "/delete-list", hDeleteList, @ptrCast(@alignCast(self)));
+            \\        try group.get(p ++ "/list-all-simple", hSimple, @ptrCast(@alignCast(self)));
+            \\        try group.get(p ++ "/export-excel", hExport, @ptrCast(@alignCast(self)));
             \\    }}
+            \\
+            \\    fn resolve2(ctx: *http.Context) *{s}ApiExt {{
+            \\        return @ptrCast(@alignCast(ctx.user_data orelse unreachable));
+            \\    }}
+            \\
+            \\    fn hPage(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hGet(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hCreate(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hUpdate(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hDelete(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hDeleteList(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hSimple(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
+            \\    fn hExport(ctx: *http.Context) !void {{ _ = resolve2(ctx); try wrapSuccess(ctx); }}
             \\}};
             \\
-        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, var_name });
+        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod });
         defer allocator.free(ext_api);
         const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
         defer allocator.free(ext_api_path);
@@ -5134,11 +5152,19 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         try buf.appendSlice(allocator,
             \\    // -- Auth (JWT) --
             \\    const jwt_secret = env.get("JWT_SECRET") orelse "changeme-in-production";
-            \\    // Create security module and wire JWT middleware:
-            \\    // var security_mod = zigmodu.security.SecurityModule.init(allocator, jwt_secret);
-            \\    // defer security_mod.deinit();
-            \\    // server.addMiddleware(try zigmodu.security.auth.jwtAuth(&security_mod, allocator));
-            \\    _ = jwt_secret;
+            \\    var security_mod = zigmodu.security.SecurityModule.init(allocator, jwt_secret);
+            \\    defer security_mod.deinit();
+            \\    try server.addMiddleware(try zigmodu.security.auth.jwtAuth(&security_mod, allocator));
+            \\
+            \\    // Rate limiter
+            \\    var limiter = try zigmodu.RateLimiter.init(allocator, "api", 1000, 100);
+            \\    defer limiter.deinit();
+            \\    try server.addMiddleware(try zigmodu.security.middleware.rateLimit(&limiter));
+            \\
+            \\    // Authz: admin-only routes can use zigmodu.security.authz.requireRole
+            \\    var authz_cfg = zigmodu.security.authz.Config.init(allocator);
+            \\    defer authz_cfg.deinit();
+            \\    // Example: authz_cfg.requireRole("/admin-api/system/.*", "admin");
             \\
             \\
         );
@@ -5167,7 +5193,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
     }
 
     try buf.appendSlice(allocator,
-        \\    var root = server.group("/api");
+        \\    var root = server.group("/admin-api");
         \\    try root.get("/health/live", healthLive, null);
         \\    try root.get("/health/ready", healthReady, null);
         \\
@@ -5178,6 +5204,12 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         const var_name = try replaceChar(allocator, name, '/', '_');
         defer allocator.free(var_name);
         try buf.print(allocator, "    try {s}_api.registerRoutes(&root);\n", .{var_name});
+    }
+    // -- Ext API routes --
+    for (module_names) |name| {
+        const var_name2 = try replaceChar(allocator, name, '/', '_');
+        defer allocator.free(var_name2);
+        try buf.print(allocator, "    try {s}_ext_api.registerRoutes(&root);\n", .{var_name2});
     }
 
     // ── Capability flags ──
