@@ -3787,6 +3787,8 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         defer allocator.free(ext_dir);
         try ensureDirGen(io, ext_dir, gen_opts);
 
+        const var_name = try replaceChar(allocator, mod_name, '/', '_');
+        defer allocator.free(var_name);
         const pascal_mod = try toPascalCase(allocator, mod_name);
         defer allocator.free(pascal_mod);
         const ext_svc = try std.fmt.allocPrint(allocator,
@@ -3794,20 +3796,20 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\// Survives zmodu regeneration.
             \\const std = @import("std");
             \\const zigmodu = @import("zigmodu");
-            \\const {s}_svc = @import("../service.zig");
+            \\const ext_svc = @import("../service.zig");
             \\
             \\pub const {s}ServiceExt = struct {{
-            \\    svc: *{s}_svc.{s}Service,
+            \\    svc: *ext_svc.{s}Service,
             \\    backend: zigmodu.data.SqlxBackend,
             \\
-            \\    pub fn init(svc: *{s}_svc.{s}Service, backend: zigmodu.data.SqlxBackend) {s}ServiceExt {{
+            \\    pub fn init(svc: *ext_svc.{s}Service, backend: zigmodu.data.SqlxBackend) {s}ServiceExt {{
             \\        return .{{ .svc = svc, .backend = backend }};
             \\    }}
             \\
             \\    // Add your custom business methods here
             \\}};
             \\
-        , .{ mod_name, mod_name, pascal_mod, mod_name, pascal_mod, mod_name, pascal_mod, pascal_mod });
+        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod });
         defer allocator.free(ext_svc);
         const ext_svc_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{ ext_dir });
         defer allocator.free(ext_svc_path);
@@ -3819,12 +3821,12 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\// Survives zmodu regeneration.
             \\const std = @import("std");
             \\const zigmodu = @import("zigmodu");
-            \\const {s}_ext = @import("service.zig");
+            \\const ext_svc = @import("service.zig");
             \\
             \\pub const {s}ApiExt = struct {{
-            \\    ext: *{s}_ext.{s}ServiceExt,
+            \\    ext: *ext_svc.{s}ServiceExt,
             \\
-            \\    pub fn init(ext: *{s}_ext.{s}ServiceExt) {s}ApiExt {{
+            \\    pub fn init(ext: *ext_svc.{s}ServiceExt) {s}ApiExt {{
             \\        return .{{ .ext = ext }};
             \\    }}
             \\
@@ -3836,7 +3838,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    }}
             \\}};
             \\
-        , .{ mod_name, mod_name, pascal_mod, mod_name, pascal_mod, mod_name, pascal_mod, pascal_mod, pascal_mod, mod_name });
+        , .{ mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, var_name });
         defer allocator.free(ext_api);
         const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
         defer allocator.free(ext_api_path);
