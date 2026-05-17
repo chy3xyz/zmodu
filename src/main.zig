@@ -2381,11 +2381,11 @@ fn detectSubsystems(allocator: std.mem.Allocator, module_map: *std.StringHashMap
         }
     }
 
-    // Subsystems must have >=2 modules sharing the prefix
+    // Subsystems: any shared prefix counts (even single-table modules get nested)
     var subsystem_map = std.StringHashMap(std.ArrayList([]const u8)).init(allocator);
     var pit = prefix_groups.iterator();
     while (pit.next()) |entry| {
-        if (entry.value_ptr.items.len >= 2) {
+        if (entry.value_ptr.items.len >= 1) {
             // This prefix IS a subsystem. Strip prefix from module names.
             var modules = std.ArrayList([]const u8).empty;
             for (entry.value_ptr.items) |full_name| {
