@@ -2661,16 +2661,13 @@ fn generateModuleApi(allocator: std.mem.Allocator, module_name: []const u8, tabl
             table.name;
         const model_name = try toPascalCase(allocator, effective_name);
         defer allocator.free(model_name);
-        const snake_name = try toSnakeCase(allocator, effective_name);
-        defer allocator.free(snake_name);
-        const plural_name = try pluralizeRoute(allocator, snake_name);
-        defer allocator.free(plural_name);
-
-        try buf.print(allocator, "        try group.get(\"/{s}/list\", list{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.get(\"/{s}/get\", get{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.post(\"/{s}/create\", create{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.put(\"/{s}/update\", update{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
-        try buf.print(allocator, "        try group.delete(\"/{s}/delete\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ plural_name, model_name });
+        // Route path uses module name (e.g., system/notice → /system/notice/list)
+        // Not snake_case table name (system_notice → /system_notices/list)
+        try buf.print(allocator, "        try group.get(\"/{s}/list\", list{s}, @ptrCast(@alignCast(self)));\n", .{ module_name, model_name });
+        try buf.print(allocator, "        try group.get(\"/{s}/get\", get{s}, @ptrCast(@alignCast(self)));\n", .{ module_name, model_name });
+        try buf.print(allocator, "        try group.post(\"/{s}/create\", create{s}, @ptrCast(@alignCast(self)));\n", .{ module_name, model_name });
+        try buf.print(allocator, "        try group.put(\"/{s}/update\", update{s}, @ptrCast(@alignCast(self)));\n", .{ module_name, model_name });
+        try buf.print(allocator, "        try group.delete(\"/{s}/delete\", delete{s}, @ptrCast(@alignCast(self)));\n", .{ module_name, model_name });
     }
     try buf.appendSlice(allocator, "    }\n\n");
 
