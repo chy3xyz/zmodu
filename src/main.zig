@@ -3828,6 +3828,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\// Survives zmodu regeneration.
             \\const std = @import("std");
             \\const zigmodu = @import("zigmodu");
+            \\const http = zigmodu.http;
             \\const R = @import("{s}");
             \\const ext_svc = @import("service.zig");
             \\
@@ -3850,13 +3851,42 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        return @ptrCast(@alignCast(ctx.user_data orelse unreachable));
             \\    }}
             \\
-            \\    fn hPage(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
-            \\    fn hDeleteList(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
-            \\    fn hSimple(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
-            \\    fn hExport(ctx: *http.Context) !void {{ _ = resolve2(ctx); try R.wrapSuccess(ctx); }}
+            \\    fn hPage(ctx: *http.Context) !void {{
+            \\        const s = resolve2(ctx);
+            \\        const pn = ctx.queryInt(usize, \"pageNo\", 1);
+            \\        const ps = ctx.queryInt(usize, \"pageSize\", 10);
+            \\        const r = s.ext.svc.list{s}(if (pn > 0) pn - 1 else 0, ps) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        try R.wrapList(ctx, r);
+            \\    }}
+            \\    fn hDeleteList(ctx: *http.Context) !void {{
+            \\        const s = resolve2(ctx);
+            \\        const ids = ctx.queryStr(\"ids\", \"\");
+            \\        if (ids.len == 0) {{ try R.wrapErr(ctx, 400, \"Missing ids\"); return; }}
+            \\        var it = std.mem.splitScalar(u8, ids, ',');
+            \\        while (it.next()) |id_str| {{
+            \\            const id = std.fmt.parseInt(i64, id_str, 10) catch continue;
+            \\            s.ext.svc.delete{s}(id) catch {{}};
+            \\        }}
+            \\        try R.wrapSuccess(ctx);
+            \\    }}
+            \\    fn hSimple(ctx: *http.Context) !void {{
+            \\        const s = resolve2(ctx);
+            \\        const r = s.ext.svc.list{s}(0, 1000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        try R.wrapList(ctx, r);
+            \\    }}
+            \\    fn hExport(ctx: *http.Context) !void {{
+            \\        const s = resolve2(ctx);
+            \\        const r = s.ext.svc.list{s}(0, 10000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        var buf = std.ArrayList(u8).empty;
+            \\        try buf.append(ctx.allocator, \"id,name\\n\");
+            \\        for (r.items) |item| {{ _ = item; try buf.appendSlice(ctx.allocator, \"\\n\"); }}
+            \\        ctx.setHeader(\"Content-Type\", \"text/csv; charset=utf-8\") catch {{}};
+            \\        ctx.setHeader(\"Content-Disposition\", \"attachment; filename=export.csv\") catch {{}};
+            \\        try ctx.text(200, buf.items);
+            \\    }}
             \\}};
             \\
-        , .{ mod_name, shared_ext_import, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod });
+        , .{ mod_name, shared_ext_import, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod });
         defer allocator.free(ext_api);
     const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
     defer allocator.free(ext_api_path);
@@ -5205,13 +5235,6 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
         defer allocator.free(var_name);
         try buf.print(allocator, "    try {s}_api.registerRoutes(&root);\n", .{var_name});
     }
-    // -- Ext API routes --
-    for (module_names) |name| {
-        const var_name2 = try replaceChar(allocator, name, '/', '_');
-        defer allocator.free(var_name2);
-        try buf.print(allocator, "    try {s}_ext_api.registerRoutes(&root);\n", .{var_name2});
-    }
-
     // ── Capability flags ──
     if (sopts.with_events) {
         try buf.appendSlice(allocator, "\n    // -- EventBus --\n    var event_bus = zigmodu.EventBus(struct { id: i64 }).init(allocator);\n    defer event_bus.deinit();\n");
