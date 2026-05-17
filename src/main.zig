@@ -3824,7 +3824,6 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         while (ext_di < ext_depth) : (ext_di += 1) { try ext_path_buf.appendSlice(allocator, "../"); }
         try ext_path_buf.appendSlice(allocator, "shared/response.zig");
         const shared_ext_import = ext_path_buf.items;
-        const pl_sfx = if (std.mem.endsWith(u8, pascal_mod, "s") or std.mem.endsWith(u8, pascal_mod, "S")) "" else "s";
 
         const ext_api = try std.fmt.allocPrint(allocator,
             \\// {s} custom API endpoints — add business routes here.
@@ -3858,7 +3857,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        const s = resolve2(ctx);
             \\        const pn = ctx.queryInt(usize, \"pageNo\", 1);
             \\        const ps = ctx.queryInt(usize, \"pageSize\", 10);
-            \\        const r = s.ext.svc.list{s}{s}(if (pn > 0) pn - 1 else 0, ps) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(if (pn > 0) pn - 1 else 0, ps) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
             \\        try R.wrapList(ctx, r);
             \\    }}
             \\    fn hDeleteList(ctx: *http.Context) !void {{
@@ -3874,12 +3873,12 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    }}
             \\    fn hSimple(ctx: *http.Context) !void {{
             \\        const s = resolve2(ctx);
-            \\        const r = s.ext.svc.list{s}{s}(0, 1000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(0, 1000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
             \\        try R.wrapList(ctx, r);
             \\    }}
             \\    fn hExport(ctx: *http.Context) !void {{
             \\        const s = resolve2(ctx);
-            \\        const r = s.ext.svc.list{s}{s}(0, 10000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(0, 10000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
             \\        var buf = std.ArrayList(u8).empty;
             \\        try buf.append(ctx.allocator, \"id,name\\n\");
             \\        for (r.items) |item| {{ _ = item; try buf.appendSlice(ctx.allocator, \"\\n\"); }}
@@ -3889,7 +3888,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    }}
             \\}};
             \\
-        , .{ mod_name, shared_ext_import, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod, pascal_mod, pl_sfx, pascal_mod, pascal_mod, pl_sfx, pascal_mod, pl_sfx });
+        , .{ mod_name, shared_ext_import, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod, mod_name, pascal_mod, pascal_mod, pascal_mod, pascal_mod, pascal_mod });
         defer allocator.free(ext_api);
     const ext_api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{ ext_dir });
     defer allocator.free(ext_api_path);
@@ -4127,10 +4126,10 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     var shared_buf: std.ArrayList(u8) = .empty;
     defer shared_buf.deinit(allocator);
     try shared_buf.appendSlice(allocator, "//! RuoYi-style API response helpers\nconst std = @import(\"std\");\nconst http = @import(\"zigmodu\").http;\n\n");
-    try shared_buf.appendSlice(allocator, "pub fn wrapOk(ctx: *http.Context, value: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, value, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{s}}\", .{inner});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
-    try shared_buf.appendSlice(allocator, "pub fn wrapList(ctx: *http.Context, result: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, result.items, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{\\\"list\\\":{s},\\\"total\\\":{d}}}\", .{inner, result.total});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
-    try shared_buf.appendSlice(allocator, "pub fn wrapSuccess(ctx: *http.Context) !void {\n    try ctx.json(200, \"{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":null}\");\n}\n\n");
-    try shared_buf.appendSlice(allocator, "pub fn wrapErr(ctx: *http.Context, errcode: i32, errmsg: []const u8) !void {\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{\\\"code\\\":{d},\\\"msg\\\":\\\"{s}\\\",\\\"data\\\":null}\", .{errcode, errmsg});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapOk(ctx: *http.Context, value: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, value, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{s}}}\", .{inner});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapList(ctx: *http.Context, result: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, result.items, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{{\\\"list\\\":{s},\\\"total\\\":{d}}}}}\", .{inner, result.total});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapSuccess(ctx: *http.Context) !void {\n    try ctx.json(200, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":null}}\");\n}\n\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapErr(ctx: *http.Context, errcode: i32, errmsg: []const u8) !void {\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":{d},\\\"msg\\\":\\\"{s}\\\",\\\"data\\\":null}}\", .{errcode, errmsg});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n");
     const shared_response = try shared_buf.toOwnedSlice(allocator);
     defer allocator.free(shared_response);
     const shared_response_path = try std.fmt.allocPrint(allocator, "{s}/response.zig", .{shared_dir});
