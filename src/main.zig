@@ -4687,6 +4687,168 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
             \\
         , gen_opts);
     }
+
+    // ── tests.zig ──
+    const tests_path = try std.fmt.allocPrint(allocator, "{s}/tests.zig", .{im_dir});
+    defer allocator.free(tests_path);
+    if (!fileExists(io, tests_path)) {
+        try writeFileGen(io, tests_path,
+            \\//! Integration tests for IM module.
+            \\const std = @import("std");
+            \\const testing = std.testing;
+            \\const zigmodu = @import("zigmodu");
+            \\const model = @import("model.zig");
+            \\const persistence = @import("persistence.zig");
+            \\const service = @import("service.zig");
+            \\const gateway = @import("gateway.zig");
+            \\const relay = @import("relay.zig");
+            \\
+            \\test "model Message default values" {
+            \\    const msg = model.Message{
+            \\        .id = null,
+            \\        .conversation_id = 1,
+            \\        .from_user_id = 10,
+            \\        .to_user_id = 20,
+            \\        .content = "hello",
+            \\        .created_at = 0,
+            \\        .updated_at = 0,
+            \\    };
+            \\    try testing.expectEqual(@as(i64, 1), msg.msg_type);
+            \\    try testing.expectEqual(@as(i64, 0), msg.status);
+            \\    try testing.expectEqualStrings("hello", msg.content);
+            \\}
+            \\
+            \\test "model Conversation default values" {
+            \\    const conv = model.Conversation{
+            \\        .id = null,
+            \\        .title = "test",
+            \\        .created_at = 0,
+            \\        .updated_at = 0,
+            \\    };
+            \\    try testing.expectEqual(@as(i64, 1), conv.conversation_type);
+            \\}
+            \\
+            \\test "model Participant default values" {
+            \\    const p = model.Participant{
+            \\        .id = null,
+            \\        .conversation_id = 1,
+            \\        .user_id = 10,
+            \\        .joined_at = 0,
+            \\    };
+            \\    try testing.expectEqual(@as(i64, 0), p.role);
+            \\}
+            \\
+            \\test "service validateMessage rejects empty content" {
+            \\    var svc = service.ImService{ .persistence = undefined };
+            \\    const msg = model.Message{
+            \\        .id = null,
+            \\        .conversation_id = 1,
+            \\        .from_user_id = 10,
+            \\        .to_user_id = 20,
+            \\        .content = "",
+            \\        .created_at = 0,
+            \\        .updated_at = 0,
+            \\    };
+            \\    try testing.expectError(error.ValidationFailed, svc.validateMessage(msg));
+            \\}
+            \\
+            \\test "service validateMessage accepts valid content" {
+            \\    var svc = service.ImService{ .persistence = undefined };
+            \\    const msg = model.Message{
+            \\        .id = null,
+            \\        .conversation_id = 1,
+            \\        .from_user_id = 10,
+            \\        .to_user_id = 20,
+            \\        .content = "hello world",
+            \\        .created_at = 0,
+            \\        .updated_at = 0,
+            \\    };
+            \\    try svc.validateMessage(msg);
+            \\}
+            \\
+            \\test "gateway init and deinit" {
+            \\    var gw = gateway.ImGateway.init(testing.allocator, testing.io);
+            \\    defer gw.deinit();
+            \\    try testing.expectEqual(@as(usize, 0), gw.registry.onlineCount());
+            \\}
+            \\
+            \\test "gateway cleanup returns 0 on empty" {
+            \\    var gw = gateway.ImGateway.init(testing.allocator, testing.io);
+            \\    defer gw.deinit();
+            \\    try testing.expectEqual(@as(usize, 0), gw.cleanup());
+            \\}
+            \\
+            \\test "ConnectionRegistry register unregister" {
+            \\    var reg = zigmodu.im.ConnectionRegistry.init(testing.allocator, testing.io);
+            \\    defer reg.deinit();
+            \\
+            \\    var dummy: u8 = 0;
+            \\    const cid = reg.register(42, @ptrCast(&dummy), testSendFn);
+            \\    try testing.expect(cid > 0);
+            \\    try testing.expect(reg.isOnline(42));
+            \\    try testing.expectEqual(@as(usize, 1), reg.onlineCount());
+            \\
+            \\    reg.unregisterByConn(cid);
+            \\    try testing.expect(!reg.isOnline(42));
+            \\    try testing.expectEqual(@as(usize, 0), reg.onlineCount());
+            \\}
+            \\
+            \\test "ConnectionRegistry sendToUser offline" {
+            \\    var reg = zigmodu.im.ConnectionRegistry.init(testing.allocator, testing.io);
+            \\    defer reg.deinit();
+            \\    try testing.expect(!reg.sendToUser(999, "nobody home"));
+            \\}
+            \\
+            \\test "ConnectionRegistry heartbeat and cleanup" {
+            \\    var reg = zigmodu.im.ConnectionRegistry.init(testing.allocator, testing.io);
+            \\    defer reg.deinit();
+            \\
+            \\    var dummy: u8 = 0;
+            \\    const cid = reg.register(1, @ptrCast(&dummy), testSendFn);
+            \\    try testing.expect(cid > 0);
+            \\
+            \\    _ = reg.tickAndCleanup(5);
+            \\    try testing.expect(reg.isOnline(1));
+            \\
+            \\    reg.heartbeat(cid);
+            \\    _ = reg.tickAndCleanup(5);
+            \\    try testing.expect(reg.isOnline(1));
+            \\}
+            \\
+            \\test "relay delivers to online user" {
+            \\    var reg = zigmodu.im.ConnectionRegistry.init(testing.allocator, testing.io);
+            \\    defer reg.deinit();
+            \\
+            \\    var captured: [256]u8 = undefined;
+            \\    var captured_len: usize = 0;
+            \\    var ctx = RelayTestCtx{ .buf = &captured, .len = &captured_len };
+            \\    _ = reg.register(1, @ptrCast(&ctx), relayTestSendFn);
+            \\
+            \\    var r = relay.ImRelay.init(&reg, testing.allocator);
+            \\    const msg = model.Message{
+            \\        .id = null, .conversation_id = 1,
+            \\        .from_user_id = 10, .to_user_id = 1,
+            \\        .content = "ping", .created_at = 0, .updated_at = 0,
+            \\    };
+            \\    try r.deliver(&msg);
+            \\    try testing.expect(captured_len > 0);
+            \\}
+            \\
+            \\const RelayTestCtx = struct { buf: *[256]u8, len: *usize };
+            \\
+            \\fn relayTestSendFn(ctx: *anyopaque, msg: []const u8) anyerror!void {
+            \\    const tc: *RelayTestCtx = @ptrCast(@alignCast(ctx));
+            \\    @memcpy(tc.buf.*[0..@min(msg.len, 256)], msg);
+            \\    tc.len.* = msg.len;
+            \\}
+            \\
+            \\fn testSendFn(ctx: *anyopaque, msg: []const u8) anyerror!void {
+            \\    _ = ctx;
+            \\    _ = msg;
+            \\}
+            \\
+        , gen_opts);
+    }
 }
 
 fn generateLifeDir(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8, project_name: []const u8, table_count: usize, module_count: usize, gen_opts: GenOptions) !void {
