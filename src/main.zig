@@ -4317,6 +4317,205 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\
     , gen_opts);
 
+    // ── README.md ──
+    const readme_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{im_dir});
+    defer allocator.free(readme_path);
+    if (!fileExists(io, readme_path)) {
+        try writeFileGen(io, readme_path,
+            \\# IM Module — Real-time Messaging
+            \\
+            \\## Architecture
+            \\
+            \\```
+            \\Client (WS)                    Client (REST)
+            \\    │                               │
+            \\    ▼                               ▼
+            \\┌─────────┐                   ┌─────────┐
+            \\│Gateway  │  /im/ws            │  Api    │  /im/send
+            \\│onConnect│◄──────────────────►│routes   │  /im/messages
+            \\│onMessage│                   └────┬────┘
+            \\│onClose  │                        │
+            \\└────┬────┘                   ┌────▼────┐
+            \\     │                        │ Service │
+            \\┌────▼────────┐               │ CRUD    │
+            \\│Connection   │               │ validate│
+            \\│Registry     │               └────┬────┘
+            \\│userId→conn  │                    │
+            \\└────┬────────┘               ┌────▼───────┐
+            \\     │                        │Persistence │
+            \\┌────▼────┐                   │Repository  │
+            \\│ Relay   │──push──┐          └────┬───────┘
+            \\└─────────┘       │               │
+            \\                  ▼          ┌────▼────┐
+            \\           ┌──────────┐      │  SQLx   │
+            \\           │WsSession │      │ Backend │
+            \\           │.send()   │      └─────────┘
+            \\           └──────────┘
+            \\```
+            \\
+            \\## Data Flow
+            \\
+            \\### Send a message
+            \\1. REST `POST /im/send {conversation_id, to_user_id, content}`
+            \\2. `ImService.send()` → validates → inserts via Repository → calls `relay.deliver()`
+            \\3. `ImRelay.deliver()` → JSON serializes → `ConnectionRegistry.sendToUser(to_user_id, json)`
+            \\4. `ConnectionRegistry` → looks up `WsSession` → calls `WsSession.send()` → writes WS text frame
+            \\5. Client receives real-time push. If offline, message persists in DB for later pull.
+            \\
+            \\### Connect to WebSocket
+            \\1. `GET /im/ws?userId=123` with `Upgrade: websocket` header
+            \\2. Server handshake (RFC 6455) → `onConnect()` returns `WsSession` pointer
+            \\3. `WsSession` registered in `ConnectionRegistry` with `user_id=123`
+            \\4. Read loop: text frames → `onMessage()`; ping → pong; close → `onClose()` cleanup
+            \\
+            \\## REST API
+            \\
+            \\| Method | Path | Description |
+            \\|--------|------|-------------|
+            \\| `POST` | `/admin-api/im/send` | Send a message (pushes to online user) |
+            \\| `GET` | `/admin-api/im/messages?conversationId=N&pageNo=1&pageSize=20` | List messages in conversation |
+            \\| `GET` | `/admin-api/im/conversations?userId=N&pageNo=1&pageSize=10` | List conversations for user |
+            \\
+            \\### Request: POST /im/send
+            \\```json
+            \\{
+            \\  "conversation_id": 1,
+            \\  "from_user_id": 10,
+            \\  "to_user_id": 20,
+            \\  "content": "hello"
+            \\}
+            \\```
+            \\### Response
+            \\```json
+            \\{"code":0,"msg":"","data":{"id":42,"conversation_id":1,"from_user_id":10,"to_user_id":20,"content":"hello","msg_type":1,"status":0,"created_at":1700000000,"updated_at":1700000000}}
+            \\```
+            \\
+            \\## WebSocket
+            \\
+            \\**Endpoint:** `ws://host:port/admin-api/im/ws?userId=123`
+            \\
+            \\**Authentication in production:** Replace `?userId=` with JWT token in query or cookie. Override `onConnect()` in `ext/` to validate the token before accepting.
+            \\
+            \\**Frames:**
+            \\| Opcode | Direction | Purpose |
+            \\|--------|-----------|---------|
+            \\| 0x1 (text) | client→server | Chat message, typing indicator, etc. |
+            \\| 0x1 (text) | server→client | Push notification (new message) |
+            \\| 0x8 (close) | both | Normal disconnect |
+            \\| 0x9 (ping) | either | Keepalive |
+            \\| 0xA (pong) | either | Keepalive response |
+            \\
+            \\**Ping/Pong:** Server responds to ping frames automatically. No application-level heartbeat needed.
+            \\
+            \\**Cleanup:** Stale connections removed by `ImGateway.cleanup()` (call every ~30s via cron/timer).
+            \\
+            \\## Module Structure
+            \\
+            \\```
+            \\src/modules/im/
+            \\├── README.md         # This file
+            \\├── module.zig        # Lifecycle + barrel re-exports
+            \\├── model.zig         # Message, Conversation, Participant structs
+            \\├── persistence.zig   # Repository(T) accessors
+            \\├── service.zig       # CRUD + send() + validate
+            \\├── api.zig           # REST handlers
+            \\├── gateway.zig       # WS upgrade + ConnectionRegistry
+            \\├── relay.zig         # Online message delivery
+            \\├── tests.zig         # Integration tests
+            \\└── ext/
+            \\    ├── service.zig   # Custom business logic (survives regeneration)
+            \\    └── api.zig       # Custom endpoints (survives regeneration)
+            \\```
+            \\
+            \\## Configuration
+            \\
+            \\No additional configuration needed. Uses the same database as the rest of the application.
+            \\
+            \\Create the tables before first use:
+            \\```sql
+            \\CREATE TABLE IF NOT EXISTS im_message (
+            \\    id BIGSERIAL PRIMARY KEY,
+            \\    conversation_id BIGINT NOT NULL,
+            \\    from_user_id BIGINT NOT NULL,
+            \\    to_user_id BIGINT NOT NULL,
+            \\    content TEXT NOT NULL,
+            \\    msg_type SMALLINT DEFAULT 1,
+            \\    status SMALLINT DEFAULT 0,
+            \\    created_at BIGINT NOT NULL,
+            \\    updated_at BIGINT NOT NULL
+            \\);
+            \\
+            \\CREATE TABLE IF NOT EXISTS im_conversation (
+            \\    id BIGSERIAL PRIMARY KEY,
+            \\    conversation_type SMALLINT DEFAULT 1,
+            \\    title TEXT NOT NULL,
+            \\    last_message TEXT,
+            \\    last_message_at BIGINT,
+            \\    created_at BIGINT NOT NULL,
+            \\    updated_at BIGINT NOT NULL
+            \\);
+            \\
+            \\CREATE TABLE IF NOT EXISTS im_participant (
+            \\    id BIGSERIAL PRIMARY KEY,
+            \\    conversation_id BIGINT NOT NULL,
+            \\    user_id BIGINT NOT NULL,
+            \\    role SMALLINT DEFAULT 0,
+            \\    joined_at BIGINT NOT NULL
+            \\);
+            \\```
+            \\
+            \\## Extension Points
+            \\
+            \\### ext/service.zig — Custom business logic
+            \\```zig
+            \\pub fn searchMessages(self: *ImServiceExt, keyword: []const u8) ![]model.Message {
+            \\    // Use self.backend for raw SQL queries
+            \\    return self.backend.query(model.Message,
+            \\        "SELECT * FROM im_message WHERE content LIKE '%' || ? || '%'", .{keyword});
+            \\}
+            \\```
+            \\
+            \\### ext/api.zig — Custom endpoints
+            \\```zig
+            \\pub fn registerRoutes(self: *ImApiExt, group: *zigmodu.http.RouteGroup) !void {
+            \\    try group.get("/im/search", searchMessages, @ptrCast(@alignCast(self)));
+            \\}
+            \\```
+            \\
+            \\### onMessage — Custom WS frame handling
+            \\Override in `ext/gateway.zig` (create the file if it doesn't exist):
+            \\```zig
+            \\// Parse JSON frames, dispatch to service methods
+            \\fn onMessage(session_ptr: ?*anyopaque, msg: []const u8) void { ... }
+            \\```
+            \\
+            \\## Key Types
+            \\
+            \\| Type | Location | Purpose |
+            \\|------|----------|---------|
+            \\| `ConnectionRegistry` | `zigmodu.im.ConnectionRegistry` | userId→connection map |
+            \\| `WsSession` | `gateway.zig` | Per-connection state + framer |
+            \\| `WsFramer` | `zigmodu.im.WsFramer` | RFC 6455 frame read/write |
+            \\| `ImRelay` | `relay.zig` | Write DB + push to online |
+            \\| `ImGateway` | `gateway.zig` | WS lifecycle + cleanup |
+            \\
+            \\## Performance
+            \\
+            \\- Single-node: all routing in-process, no external dependencies
+            \\- Multi-node: add Redis bridge to `ImRelay` for cross-node delivery
+            \\- Connection limit: bounded by OS file descriptors (~10k default, tunable)
+            \\- Message throughput: limited by DB insert rate (~5k/s per connection on modern HW)
+            \\
+            \\## Testing
+            \\
+            \\```bash
+            \\# Run IM-specific tests
+            \\zig test src/modules/im/tests.zig --dep zigmodu -Mzigmodu=<path>/root.zig
+            \\```
+            \\
+        , gen_opts);
+    }
+
     // ── model.zig ──
     const model_path = try std.fmt.allocPrint(allocator, "{s}/model.zig", .{im_dir});
     defer allocator.free(model_path);
