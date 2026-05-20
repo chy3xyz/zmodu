@@ -4542,13 +4542,35 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\const zigmodu = @import("zigmodu");
         \\const http = zigmodu.http;
         \\const ConnectionRegistry = zigmodu.im.ConnectionRegistry;
+        \\const WsFramer = zigmodu.im.WsFramer;
+        \\
+        \\/// Per-connection session stored in ConnectionRegistry.
+        \\pub const WsSession = struct {
+        \\    user_id: u64,
+        \\    conn_id: u32,
+        \\    framer: WsFramer,
+        \\    gateway: *ImGateway,
+        \\    mutex: std.Io.Mutex,
+        \\    last_ping_tick: u64,
+        \\
+        \\    pub fn send(self: *WsSession, msg: []const u8) !void {
+        \\        self.mutex.lock(self.framer.io) catch return error.NotConnected;
+        \\        defer self.mutex.unlock(self.framer.io);
+        \\        try self.framer.writeText(msg);
+        \\    }
+        \\};
         \\
         \\pub const ImGateway = struct {
+        \\    allocator: std.mem.Allocator,
+        \\    io: std.Io,
         \\    registry: ConnectionRegistry,
-        \\    conn_counter: u32 = 0,
         \\
         \\    pub fn init(allocator: std.mem.Allocator, io: std.Io) ImGateway {
-        \\        return .{ .registry = ConnectionRegistry.init(allocator, io) };
+        \\        return .{
+        \\            .allocator = allocator,
+        \\            .io = io,
+        \\            .registry = ConnectionRegistry.init(allocator, io),
+        \\        };
         \\    }
         \\
         \\    pub fn deinit(self: *ImGateway) void {
@@ -4561,25 +4583,53 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\        try group.ws("/im/ws", onConnect, onMessage, onClose, @ptrCast(@alignCast(self)));
         \\    }
         \\
-        \\    /// Periodic cleanup of stale connections. Call from a timer/cron.
+        \\    /// Periodic cleanup of stale connections. Call every ~30s.
         \\    pub fn cleanup(self: *ImGateway) usize {
         \\        return self.registry.tickAndCleanup(3);
         \\    }
         \\
-        \\    fn onConnect(ctx: *http.Context) bool {
-        \\        _ = ctx;
-        \\        return true;
+        \\    fn onConnect(ctx: *http.Context, raw_framer: *anyopaque) ?*anyopaque {
+        \\        const gw: *ImGateway = @ptrCast(@alignCast(ctx.user_data orelse return null));
+        \\        const framer: *WsFramer = @ptrCast(@alignCast(raw_framer));
+        \\
+        \\        const user_id = ctx.queryInt(u64, "userId", 0);
+        \\        if (user_id == 0) return null;
+        \\
+        \\        const session = gw.allocator.create(WsSession) catch return null;
+        \\        session.* = .{
+        \\            .user_id = user_id,
+        \\            .conn_id = 0,
+        \\            .framer = framer.*,
+        \\            .gateway = gw,
+        \\            .mutex = std.Io.Mutex.init,
+        \\            .last_ping_tick = 0,
+        \\        };
+        \\
+        \\        const conn_id = gw.registry.register(user_id, @ptrCast(session), sendViaWsFramer);
+        \\        if (conn_id == 0) {
+        \\            gw.allocator.destroy(session);
+        \\            return null;
+        \\        }
+        \\        session.conn_id = conn_id;
+        \\        std.log.info("[im] user {d} connected (conn={d})", .{ user_id, conn_id });
+        \\        return @ptrCast(session);
         \\    }
         \\
-        \\    fn onMessage(ctx: *http.Context, msg: []const u8) void {
-        \\        _ = ctx;
-        \\        _ = msg;
-        \\        // Plain WS text frame received — extensibility point
-        \\        // Decode JSON, dispatch to handler
+        \\    fn sendViaWsFramer(ctx: *anyopaque, msg: []const u8) anyerror!void {
+        \\        const session: *WsSession = @ptrCast(@alignCast(ctx));
+        \\        try session.send(msg);
         \\    }
         \\
-        \\    fn onClose(ctx: *http.Context) void {
-        \\        _ = ctx;
+        \\    fn onMessage(session_ptr: ?*anyopaque, msg: []const u8) void {
+        \\        const session: *WsSession = @ptrCast(@alignCast(session_ptr orelse return));
+        \\        std.log.debug("[im] msg from user {d}: {s}", .{ session.user_id, msg[0..@min(msg.len, 64)] });
+        \\    }
+        \\
+        \\    fn onClose(session_ptr: ?*anyopaque) void {
+        \\        const session: *WsSession = @ptrCast(@alignCast(session_ptr orelse return));
+        \\        std.log.info("[im] user {d} disconnected (conn={d})", .{ session.user_id, session.conn_id });
+        \\        session.gateway.registry.unregisterByConn(session.conn_id);
+        \\        session.gateway.allocator.destroy(session);
         \\    }
         \\};
         \\
