@@ -4615,18 +4615,30 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\    registry: *zigmodu.ai.SkillRegistry,
         \\    chat_fn: ChatFn, chat_ctx: *anyopaque,
         \\    pub fn run(self: *Agent, goal: []const u8, ctx: *zigmodu.ai.SkillContext, max_steps: usize) !AgentResult {
-        \\        var steps: usize = 0; var last_answer: []const u8 = "";
+        \\        var steps: usize = 0;
+        \\        var context_buf = std.ArrayList(u8).empty;
+        \\        defer context_buf.deinit(ctx.allocator);
         \\        while (steps < max_steps) : (steps += 1) {
-        \\            const prompt = try self.buildPrompt(ctx, goal, last_answer);
+        \\            const prompt = try self.buildPrompt(ctx, goal, context_buf.items);
         \\            const response = try self.chat_fn(self.chat_ctx, prompt);
+        \\            ctx.allocator.free(prompt);
         \\            if (self.parseToolCall(response)) |tc| {
         \\                const result = self.registry.dispatch(tc.name, ctx, .null) catch continue;
-        \\                last_answer = @constCast(tc.name); _ = result;
+        \\                const result_str = switch (result) {
+        \\                    .string => |s| s,
+        \\                    .integer => |n| try std.fmt.allocPrint(ctx.allocator, "{d}", .{n}),
+        \\                    else => "ok",
+        \\                };
+        \\                try context_buf.appendSlice(ctx.allocator, "Tool ");
+        \\                try context_buf.appendSlice(ctx.allocator, tc.name);
+        \\                try context_buf.appendSlice(ctx.allocator, ": ");
+        \\                try context_buf.appendSlice(ctx.allocator, result_str);
+        \\                try context_buf.appendSlice(ctx.allocator, "\n");
         \\            } else {
         \\                return .{ .answer = response, .steps = steps + 1 };
         \\            }
         \\        }
-        \\        return .{ .answer = last_answer, .steps = steps };
+        \\        return .{ .answer = context_buf.items, .steps = steps };
         \\    }
         \\    fn buildPrompt(self: *Agent, ctx: *zigmodu.ai.SkillContext, goal: []const u8, context: []const u8) ![]const u8 {
         \\        var buf = std.ArrayList(u8).empty;
