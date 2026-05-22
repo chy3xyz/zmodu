@@ -4768,8 +4768,14 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
     if (!fileExists(io, test_path)) try writeFileGen(io, test_path,
         \\const std = @import("std"); const testing = std.testing; const zigmodu = @import("zigmodu"); const agent = @import("agent.zig");
         \\test "Agent ReAct loop with skill dispatch" { const a = testing.allocator; var reg = zigmodu.ai.SkillRegistry.init(a, testing.io); defer reg.deinit(); try reg.register(.{ .name = "lookup", .description = "Look up data", .parameters = &.{}, .handler = lookupHandler }); var ag = agent.Agent{ .registry = &reg, .chat_fn = testChatFn, .chat_ctx = @ptrCast(&reg) }; var ctx = zigmodu.ai.SkillContext{ .allocator = a }; const r = try ag.run("find info", &ctx, 3); try testing.expect(r.steps <= 3); }
+        \\test "Agent stops at max steps" { const a = testing.allocator; var reg = zigmodu.ai.SkillRegistry.init(a, testing.io); defer reg.deinit(); try reg.register(.{ .name = "loop", .description = "Always called", .parameters = &.{}, .handler = loopHandler }); var ag = agent.Agent{ .registry = &reg, .chat_fn = alwaysToolFn, .chat_ctx = @ptrCast(&reg) }; var ctx = zigmodu.ai.SkillContext{ .allocator = a }; const r = try ag.run("loop test", &ctx, 2); try testing.expectEqual(@as(usize, 2), r.steps); }
+        \\test "Agent tool call parsing" { const a = testing.allocator; var ag = agent.Agent{ .registry = undefined, .chat_fn = undefined, .chat_ctx = undefined }; const resp = "{\"name\":\"search\",\"arguments\":\"hello\"}"; const tc = ag.parseToolCall(resp); try testing.expect(tc != null); try testing.expectEqualStrings("search", tc.?.name); try testing.expectEqualStrings("hello", tc.?.args_json); }
+        \\test "Agent no tool call returns final answer" { const a = testing.allocator; var reg = zigmodu.ai.SkillRegistry.init(a, testing.io); defer reg.deinit(); var ag = agent.Agent{ .registry = &reg, .chat_fn = finalAnswerFn, .chat_ctx = undefined }; var ctx = zigmodu.ai.SkillContext{ .allocator = a }; const r = try ag.run("question", &ctx, 3); try testing.expectEqual(@as(usize, 1), r.steps); try testing.expectEqualStrings("The answer is 42", r.answer); }
         \\fn testChatFn(ctx: *anyopaque, _: []const u8) anyerror![]const u8 { _ = ctx; return "I found: 42"; }
+        \\fn alwaysToolFn(ctx: *anyopaque, _: []const u8) anyerror![]const u8 { _ = ctx; return "{\"name\":\"loop\",\"arguments\":\"\"}"; }
+        \\fn finalAnswerFn(ctx: *anyopaque, _: []const u8) anyerror![]const u8 { _ = ctx; return "The answer is 42"; }
         \\fn lookupHandler(ctx: *zigmodu.ai.SkillContext, _: std.json.Value) anyerror!std.json.Value { _ = ctx; return .{ .string = "42" }; }
+        \\fn loopHandler(ctx: *zigmodu.ai.SkillContext, _: std.json.Value) anyerror!std.json.Value { _ = ctx; return .{ .string = "ok" }; }
     , gen_opts);
 
     // ── README.md ──
