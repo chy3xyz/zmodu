@@ -1139,6 +1139,37 @@ fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]c
         \\| HealthEndpoint | zigmodu.HealthEndpoint | Health checks |
         \\| EventBus(T) | zigmodu.EventBus(T) | Typed event bus |
         \\| Application | zigmodu.Application | App lifecycle |
+        \\| ConnectionRegistry | zigmodu.im.ConnectionRegistry | userId→connection map |
+        \\| WsFramer | zigmodu.im.WsFramer | RFC 6455 frame r/w |
+        \\| BufferPool | zigmodu.im.BufferPool | Shared 4KB buffer pool |
+        \\| Tool | zigmodu.ai.Tool | Agent-callable function |
+        \\| SkillRegistry | zigmodu.ai.SkillRegistry | Tool registry + dispatch |
+        \\
+        \\## IM Module (--with-websocket)
+        \\
+        \\Real-time messaging with WebSocket push:
+        \\- REST: POST /im/send, GET /im/messages, GET /im/conversations
+        \\- WebSocket: /im/ws?userId=N (RFC 6455)
+        \\- Gateway: onConnect→session, onMessage→dispatch, onClose→cleanup
+        \\- Relay: write DB → push to online user via ConnectionRegistry
+        \\- See src/modules/im/PERF.md for kernel tuning + deployment guide
+        \\
+        \\## AI Chat Module (--with-aichat)
+        \\
+        \\LLM-powered conversations:
+        \\- POST /ai/chat/send?conversationId=N (body=user message)
+        \\- GET /ai/chat/conversations, GET /ai/chat/messages
+        \\- provider.zig: OpenAI-compatible JSON builder + response parser
+        \\- SSE streaming via sse.zig
+        \\- Override HTTP call in ext/service.zig with your preferred HTTP client
+        \\
+        \\## AI Agent Module (--with-agent)
+        \\
+        \\Autonomous task execution with tool calling:
+        \\- POST /ai/agent/run?goal=... (ReAct loop: think→act→observe→repeat)
+        \\- GET /ai/agent/runs — run history
+        \\- SkillRegistry: register tools from any module, agent auto-discovers
+        \\- Multi-tenant: SkillContext carries tenant_id, ORM auto-filters
         \\
     );
     return buf.toOwnedSlice(allocator);
