@@ -4577,13 +4577,25 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
     const rm_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{dir}); defer allocator.free(rm_path);
     if (!fileExists(io, rm_path)) try writeFileGen(io, rm_path,
         \\# AI Chat Module
-        \\## Quick Start
+        \\## Quick Start (2 steps)
+        \\### 1. Set up provider in main.zig
         \\```zig
-        \\var provider = provider.AiProvider.init(allocator,
+        \\var ai_provider = ai_chat.provider.AiProvider.init(allocator,
         \\    "https://api.openai.com/v1/chat/completions",
         \\    "Bearer sk-your-key",
         \\    "gpt-4o");
-        \\service.setProvider(provider);
+        \\ai_chat_svc.setProvider(ai_provider);
+        \\```
+        \\### 2. Implement HTTP call in ext/service.zig
+        \\Open `src/modules/ai/chat/ext/service.zig` and add:
+        \\```zig
+        \\pub fn chat(self: *AiChatServiceExt, messages: []const provider.ChatMsg) ![]const u8 {{
+        \\    const body = try self.svc.provider.?.buildBody(messages);
+        \\    defer self.svc.provider.?.allocator.free(body);
+        \\    // POST to endpoint using your HTTP client of choice
+        \\    // Parse response, return content
+        \\    return self.svc.provider.?.extractContent(response_bytes);
+        \\}}
         \\```
         \\## API
         \\| Method | Path | Description |
