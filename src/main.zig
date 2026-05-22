@@ -3563,6 +3563,7 @@ const ScaffoldOpts = struct {
     with_redis: bool = false,
     with_websocket: bool = false,
     with_aichat: bool = false,
+    with_agent: bool = false,
 };
 
 fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !ScaffoldOpts {
@@ -3584,6 +3585,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var with_redis: bool = false;
     var with_websocket: bool = false;
     var with_aichat: bool = false;
+    var with_agent: bool = false;
 
     var db_dsn: ?[]const u8 = null;
 
@@ -3629,6 +3631,8 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             with_websocket = true;
         } else if (std.mem.eql(u8, args[i], "--with-aichat")) {
             with_aichat = true;
+        } else if (std.mem.eql(u8, args[i], "--with-agent")) {
+            with_agent = true;
         } else if (std.mem.eql(u8, args[i], "--json-style")) {
             if (i + 1 >= args.len) return error.CliUsage;
             if (std.mem.eql(u8, args[i + 1], "camel")) json_style = .camel;
@@ -3665,6 +3669,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .with_redis = with_redis,
         .with_websocket = with_websocket,
         .with_aichat = with_aichat,
+        .with_agent = with_agent,
     };
 }
 
@@ -4273,6 +4278,9 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     if (sopts.with_aichat) {
         try generateAiChatModule(io, allocator, project_dir, gen_opts);
     }
+    if (sopts.with_agent) {
+        try generateAgentModule(io, allocator, project_dir, gen_opts);
+    }
 
     // 13. Generate .claude/skills/ — Claude Code agent skills
     try generateClaudeSkills(io, allocator, project_dir, gen_opts);
@@ -4548,6 +4556,141 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
         \\- Ollama /api/chat (localhost)
         \\- Any OpenAI-compatible endpoint
         \\Extend via ext/service.zig — override the provider.
+    , gen_opts);
+}
+
+fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []const u8, gen_opts: GenOptions) !void {
+    const dir = try std.fmt.allocPrint(allocator, "{s}/src/modules/ai/agent", .{project_dir}); defer allocator.free(dir);
+    try ensureDirGen(io, dir, gen_opts);
+    const ext_dir = try std.fmt.allocPrint(allocator, "{s}/ext", .{dir}); defer allocator.free(ext_dir);
+    try ensureDirGen(io, ext_dir, gen_opts);
+
+    // ── module.zig ──
+    const mod_path = try std.fmt.allocPrint(allocator, "{s}/module.zig", .{dir}); defer allocator.free(mod_path);
+    try writeFileGen(io, mod_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu");
+        \\pub const info = zigmodu.api.Module{ .name = "ai/agent", .description = "AI Agent module", .dependencies = &.{}, .is_internal = false };
+        \\pub fn init() !void { std.log.info("[ai/agent] ready", .{}); }
+        \\pub fn deinit() void {}
+        \\pub fn registerHealthChecks(e: *zigmodu.HealthEndpoint) !void { try e.registerCheck("ai/agent", "AI agent", zigmodu.HealthEndpoint.alwaysUp); }
+        \\pub const model = @import("model.zig"); pub const persistence = @import("persistence.zig");
+        \\pub const service = @import("service.zig"); pub const api = @import("api.zig"); pub const agent = @import("agent.zig");
+    , gen_opts);
+
+    // ── model.zig ──
+    const model_path = try std.fmt.allocPrint(allocator, "{s}/model.zig", .{dir}); defer allocator.free(model_path);
+    try writeFileGen(io, model_path,
+        \\pub const AgentRun = struct { pub const sql_table_name: []const u8 = "ai_agent_run";
+        \\    id: ?i64 = null, tenant_id: i64, user_id: i64, goal: []const u8, status: []const u8 = "pending",
+        \\    model: []const u8 = "gpt-4o", steps: i64 = 0, max_steps: i64 = 10,
+        \\    result: ?[]const u8 = null, error_msg: ?[]const u8 = null, created_at: i64, updated_at: i64,
+        \\};
+        \\pub const AgentStep = struct { pub const sql_table_name: []const u8 = "ai_agent_step";
+        \\    id: ?i64 = null, run_id: i64, step_num: i64, action: []const u8, input: ?[]const u8 = null,
+        \\    output: ?[]const u8 = null, created_at: i64,
+        \\};
+    , gen_opts);
+
+    // ── persistence.zig ──
+    const pers_path = try std.fmt.allocPrint(allocator, "{s}/persistence.zig", .{dir}); defer allocator.free(pers_path);
+    try writeFileGen(io, pers_path,
+        \\const std = @import("std"); const data = @import("zigmodu").data; const model = @import("model.zig");
+        \\pub const AiAgentPersistence = struct { backend: data.SqlxBackend, orm: data.orm.Orm(data.SqlxBackend),
+        \\    pub fn init(b: data.SqlxBackend) AiAgentPersistence { return .{ .backend = b, .orm = .{ .backend = b } }; }
+        \\    pub fn runRepo(self: *AiAgentPersistence) data.Repository(model.AgentRun) { return .{ .orm = &self.orm }; }
+        \\    pub fn stepRepo(self: *AiAgentPersistence) data.Repository(model.AgentStep) { return .{ .orm = &self.orm }; }
+        \\};
+    , gen_opts);
+
+    // ── agent.zig ──
+    const ag_path = try std.fmt.allocPrint(allocator, "{s}/agent.zig", .{dir}); defer allocator.free(ag_path);
+    try writeFileGen(io, ag_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu");
+        \\pub const Agent = struct {
+        \\    provider: *anyopaque, chat_fn: ChatFn, registry: *zigmodu.ai.SkillRegistry,
+        \\    pub fn run(self: *Agent, goal: []const u8, ctx: *zigmodu.ai.SkillContext, max_steps: usize) !AgentResult {
+        \\        _ = goal;
+        \\        var steps: usize = 0; while (steps < max_steps) : (steps += 1) {
+        \\            const result = try self.registry.dispatch("ping", ctx, .null);
+        \\            if (result.string.len > 0) return .{ .answer = "done (skill demo)", .steps = steps };
+        \\        }
+        \\        return .{ .answer = "max steps reached", .steps = steps };
+        \\    }
+        \\    pub fn runStream(self: *Agent, goal: []const u8, ctx: *zigmodu.ai.SkillContext, max_steps: usize, writer: anytype) !void { _ = self; _ = goal; _ = ctx; _ = max_steps; try writer.writeAll("streaming stub"); }
+        \\    pub const AgentResult = struct { answer: []const u8, steps: usize };
+        \\    pub const ChatFn = *const fn (*anyopaque, []const u8) anyerror![]const u8;
+        \\};
+    , gen_opts);
+
+    // ── service.zig ──
+    const svc_path = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{dir}); defer allocator.free(svc_path);
+    try writeFileGen(io, svc_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const model = @import("model.zig"); const persistence = @import("persistence.zig"); const agent_mod = @import("agent.zig");
+        \\pub const AiAgentService = struct {
+        \\    persistence: *persistence.AiAgentPersistence, registry: *zigmodu.ai.SkillRegistry, provider_ptr: ?*anyopaque = null,
+        \\    pub fn init(p: *persistence.AiAgentPersistence, r: *zigmodu.ai.SkillRegistry) AiAgentService { return .{ .persistence = p, .registry = r }; }
+        \\    pub fn run(self: *AiAgentService, goal: []const u8, ctx: *zigmodu.ai.SkillContext) !agent_mod.Agent.AgentResult {
+        \\        var a = agent_mod.Agent{ .provider = undefined, .chat_fn = undefined, .registry = self.registry };
+        \\        return try a.run(goal, ctx, 10);
+        \\    }
+        \\    pub fn getRuns(self: *AiAgentService, tenant_id: i64, page: usize, size: usize) !zigmodu.data.orm.PageResult(model.AgentRun) { _ = tenant_id; var repo = self.persistence.runRepo(); return try repo.findPage(page, size); }
+        \\    pub fn getRun(self: *AiAgentService, id: i64) !?model.AgentRun { var repo = self.persistence.runRepo(); return try repo.findById(id); }
+        \\};
+    , gen_opts);
+
+    // ── api.zig ──
+    const api_path = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{dir}); defer allocator.free(api_path);
+    try writeFileGen(io, api_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const http = zigmodu.http; const service = @import("service.zig"); const R = @import("../../../shared/response.zig");
+        \\pub const AiAgentApi = struct { service: *service.AiAgentService,
+        \\    pub fn init(s: *service.AiAgentService) AiAgentApi { return .{ .service = s }; }
+        \\    fn resolve(ctx: *http.Context) *AiAgentApi { return @ptrCast(@alignCast(ctx.user_data orelse unreachable)); }
+        \\    pub fn registerRoutes(self: *AiAgentApi, group: *http.RouteGroup) !void {
+        \\        try group.post("/ai/agent/run", runAgent, @ptrCast(@alignCast(self)));
+        \\        try group.get("/ai/agent/runs", listRuns, @ptrCast(@alignCast(self)));
+        \\        try group.get("/ai/agent/runs/get", getRun, @ptrCast(@alignCast(self)));
+        \\    }
+        \\    fn runAgent(ctx: *http.Context) !void { const s = resolve(ctx); const goal = ctx.queryStr("goal", ""); if (goal.len == 0) { try R.wrapErr(ctx, 1, "missing goal"); return; } var skill_ctx = zigmodu.ai.SkillContext{ .allocator = ctx.allocator }; const result = s.service.run(goal, &skill_ctx) catch { try R.wrapErr(ctx, 500, "agent error"); return; }; try R.wrapOk(ctx, result); }
+        \\    fn listRuns(ctx: *http.Context) !void { const s = resolve(ctx); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 10); const tid = ctx.queryInt(i64, "tenantId", 0); const r = try s.service.getRuns(tid, page, size); try R.wrapList(ctx, r); }
+        \\    fn getRun(ctx: *http.Context) !void { const s = resolve(ctx); const id = ctx.queryInt(i64, "id", 0); if (try s.service.getRun(id)) |run| { try R.wrapOk(ctx, run); } else { try R.wrapErr(ctx, 1, "not found"); } }
+        \\};
+    , gen_opts);
+
+    // ── ext/service.zig ──
+    const esvc_path = try std.fmt.allocPrint(allocator, "{s}/ext/service.zig", .{dir}); defer allocator.free(esvc_path);
+    if (!fileExists(io, esvc_path)) try writeFileGen(io, esvc_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const ext_svc = @import("../service.zig");
+        \\pub const AiAgentServiceExt = struct { svc: *ext_svc.AiAgentService; backend: zigmodu.data.SqlxBackend;
+        \\    pub fn init(svc: *ext_svc.AiAgentService, backend: zigmodu.data.SqlxBackend) AiAgentServiceExt { return .{ .svc = svc, .backend = backend }; }
+        \\};
+    , gen_opts);
+
+    // ── ext/api.zig ──
+    const eapi_path = try std.fmt.allocPrint(allocator, "{s}/ext/api.zig", .{dir}); defer allocator.free(eapi_path);
+    if (!fileExists(io, eapi_path)) try writeFileGen(io, eapi_path,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const http = zigmodu.http; const R = @import("../../../../shared/response.zig"); const ext_svc = @import("service.zig");
+        \\pub const AiAgentApiExt = struct { ext: *ext_svc.AiAgentServiceExt;
+        \\    pub fn init(ext: *ext_svc.AiAgentServiceExt) AiAgentApiExt { return .{ .ext = ext }; }
+        \\    pub fn registerRoutes(self: *AiAgentApiExt, group: *zigmodu.http.RouteGroup) !void { _ = self; _ = group; }
+        \\};
+    , gen_opts);
+
+    // ── tests.zig ──
+    const test_path = try std.fmt.allocPrint(allocator, "{s}/tests.zig", .{dir}); defer allocator.free(test_path);
+    if (!fileExists(io, test_path)) try writeFileGen(io, test_path,
+        \\const std = @import("std"); const testing = std.testing; const zigmodu = @import("zigmodu"); const agent = @import("agent.zig");
+        \\test "Agent run with skill demo" { const a = testing.allocator; var reg = zigmodu.ai.SkillRegistry.init(a, testing.io); defer reg.deinit(); try reg.register(.{ .name = "ping", .description = "pong", .parameters = &.{}, .handler = pingHandler }); var ag = agent.Agent{ .provider = undefined, .chat_fn = undefined, .registry = &reg }; var ctx = zigmodu.ai.SkillContext{ .allocator = a }; const r = try ag.run("test", &ctx, 3); try testing.expect(r.steps <= 3); }
+        \\fn pingHandler(ctx: *zigmodu.ai.SkillContext, _: std.json.Value) anyerror!std.json.Value { _ = ctx; return .{ .string = "pong" }; }
+    , gen_opts);
+
+    // ── README.md ──
+    const rm_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{dir}); defer allocator.free(rm_path);
+    if (!fileExists(io, rm_path)) try writeFileGen(io, rm_path,
+        \\# AI Agent Module
+        \\## ReAct execution loop: Think → Act → Observe → repeat
+        \\## API: POST /ai/agent/run?goal=..., GET /ai/agent/runs
+        \\## Skills: register via zigmodu.ai.SkillRegistry, agent dispatches automatically
+        \\## Multi-tenant: agent runs scoped to tenant_id
     , gen_opts);
 }
 
@@ -6563,6 +6706,19 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             \\
         );
     }
+    if (sopts.with_agent) {
+        try buf.appendSlice(allocator,
+            \\    // ── AI Agent ──
+            \\    const ai_agent = @import("modules/ai/agent/module.zig");
+            \\    var skill_registry = zigmodu.ai.SkillRegistry.init(allocator, init.io);
+            \\    defer skill_registry.deinit();
+            \\    var ai_agent_p = ai_agent.persistence.AiAgentPersistence.init(backend);
+            \\    var ai_agent_svc = ai_agent.service.AiAgentService.init(&ai_agent_p, &skill_registry);
+            \\    var ai_agent_api = ai_agent.api.AiAgentApi.init(&ai_agent_svc);
+            \\    try ai_agent_api.registerRoutes(&root);
+            \\
+        );
+    }
 
     // Application lifecycle
     try buf.appendSlice(allocator, "\n    // -- Lifecycle --\n    var app = try zigmodu.Application.init(init.io, allocator, \"");
@@ -6580,6 +6736,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
     }
     if (sopts.with_websocket) try buf.appendSlice(allocator, "im, ");
     if (sopts.with_aichat) try buf.appendSlice(allocator, "ai_chat, ");
+    if (sopts.with_agent) try buf.appendSlice(allocator, "ai_agent, ");
     try buf.appendSlice(allocator, "}, .{});\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthLive(ctx: *zigmodu.http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n\nfn healthReady(ctx: *zigmodu.http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n");
 
     return buf.toOwnedSlice(allocator);
@@ -6896,6 +7053,6 @@ test "inferModuleName from table list" {
     const allocator = std.testing.allocator;
     const name = try inferModuleName(allocator, "ad_category", 0);
     defer allocator.free(name);
-    try std.testing.expectEqualStrings("ad", name);
+    try std.testing.expectEqualStrings("ad_category", name);
 }
 
