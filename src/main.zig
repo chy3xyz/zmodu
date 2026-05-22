@@ -5354,33 +5354,23 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\    try w.interface.flush();
         \\}
         \\
+        \\/// Called by onMessage when a text frame arrives. user_id is the sender, msg is the JSON payload.
+        \\pub const MsgHandler = *const fn (ctx: *anyopaque, user_id: u64, msg: []const u8) void;
+        \\
         \\pub const ImGateway = struct {
         \\    allocator: std.mem.Allocator,
         \\    io: std.Io,
         \\    registry: ConnectionRegistry,
+        \\    msg_handler: ?MsgHandler = null,
+        \\    msg_ctx: ?*anyopaque = null,
         \\
         \\    pub fn init(allocator: std.mem.Allocator, io: std.Io) ImGateway {
-        \\        return .{
-        \\            .allocator = allocator,
-        \\            .io = io,
-        \\            .registry = ConnectionRegistry.init(allocator, io),
-        \\        };
+        \\        return .{ .allocator = allocator, .io = io, .registry = ConnectionRegistry.init(allocator, io) };
         \\    }
-        \\
-        \\    pub fn deinit(self: *ImGateway) void {
-        \\        self.registry.deinit();
-        \\    }
-        \\
-        \\    /// Register WS route on the given group.
-        \\    pub fn register(self: *ImGateway, group: *http.RouteGroup, allocator: std.mem.Allocator) !void {
-        \\        _ = allocator;
-        \\        try group.ws("/im/ws", onConnect, onMessage, onClose, @ptrCast(@alignCast(self)));
-        \\    }
-        \\
-        \\    /// Periodic cleanup of stale connections. Call every ~30s.
-        \\    pub fn cleanup(self: *ImGateway) usize {
-        \\        return self.registry.tickAndCleanup(3);
-        \\    }
+        \\    pub fn deinit(self: *ImGateway) void { self.registry.deinit(); }
+        \\    pub fn setMsgHandler(self: *ImGateway, handler: MsgHandler, ctx: *anyopaque) void { self.msg_handler = handler; self.msg_ctx = ctx; }
+        \\    pub fn register(self: *ImGateway, group: *http.RouteGroup, allocator: std.mem.Allocator) !void { _ = allocator; try group.ws("/im/ws", onConnect, onMessage, onClose, @ptrCast(@alignCast(self))); }
+        \\    pub fn cleanup(self: *ImGateway) usize { return self.registry.tickAndCleanup(3); }
         \\
         \\    fn onConnect(ctx: *http.Context, raw_framer: *anyopaque) ?*anyopaque {
         \\        const gw: *ImGateway = @ptrCast(@alignCast(ctx.user_data orelse return null));
@@ -5415,7 +5405,7 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\
         \\    fn onMessage(session_ptr: ?*anyopaque, msg: []const u8) void {
         \\        const session: *WsSession = @ptrCast(@alignCast(session_ptr orelse return));
-        \\        std.log.debug("[im] msg from user {d}: {s}", .{ session.user_id, msg[0..@min(msg.len, 64)] });
+        \\        if (session.gateway.msg_handler) |h| h(session.gateway.msg_ctx.?, session.user_id, msg);
         \\    }
         \\
         \\    fn onClose(session_ptr: ?*anyopaque) void {
@@ -6708,6 +6698,8 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             \\    im_svc.setRelay(@ptrCast(&im_relay), @ptrCast(&im.relay.ImRelay.deliver));
             \\    try im_api.registerRoutes(&root);
             \\    try im_gw.register(&root, allocator);
+            \\    // Periodic cleanup (every ~30s in production via cron/timer)
+            \\    _ = im_gw.cleanup();
             \\
         );
     }
