@@ -4874,6 +4874,42 @@ fn generateWeb4Module(io: std.Io, allocator: std.mem.Allocator, project_dir: []c
         \\    pub fn registerRoutes(self: *Web4ApiExt, group: *zigmodu.http.RouteGroup) !void { _ = self; _ = group; }
         \\};
     , gen_opts);
+
+    // ── tests.zig ──
+    const wt = try std.fmt.allocPrint(allocator, "{s}/tests.zig", .{dir}); defer allocator.free(wt);
+    if (!fileExists(io, wt)) try writeFileGen(io, wt,
+        \\const std = @import("std"); const testing = std.testing; const zigmodu = @import("zigmodu"); const model = @import("model.zig");
+        \\test "Web4Identity defaults" { const i = model.Web4Identity{ .id = null, .tenant_id = 1, .user_id = 1, .did = "did:key:z6Mk...", .did_doc = "{}", .public_key = "ed25519", .created_at = 0 }; try testing.expectEqual(@as(i64, 1), i.tenant_id); }
+        \\test "Web4Invoice defaults" { const inv = model.Web4Invoice{ .id = null, .tenant_id = 1, .invoice_id = "inv-1", .payee_did = "did:key:z...", .amount = 1000000, .currency = "usdc", .created_at = 0 }; try testing.expectEqualStrings("pending", inv.status); }
+        \\test "DID generate and resolve" { const did = zigmodu.web4.DidKey.generate(testing.allocator, testing.io); defer testing.allocator.free(did.did); const doc = try did.document(testing.allocator); defer testing.allocator.free(doc); try testing.expect(std.mem.indexOf(u8, doc, "did:key:z") != null); }
+        \\test "DID sign verify roundtrip" { var did = zigmodu.web4.DidKey.generate(testing.allocator, testing.io); defer testing.allocator.free(did.did); const sig = try did.sign(testing.allocator, "test"); defer testing.allocator.free(sig); try testing.expect(try did.verify("test", sig)); }
+        \\test "x402 invoice fields" { const inv = zigmodu.web4.x402.Invoice{ .id = "inv-1", .payee_did = "did:key:z...", .amount = 500000, .currency = .usdc, .deadline = 0, .description = "test" }; try testing.expectEqual(@as(u64, 500000), inv.amount); }
+        \\test "x402 payment stub" { const proof = zigmodu.web4.x402.PaymentProof{ .tx_hash = "0xabc", .invoice_id = "inv-1" }; try testing.expect(zigmodu.web4.x402.verifyPayment(proof)); }
+    , gen_opts);
+
+    // ── README.md ──
+    const wr = try std.fmt.allocPrint(allocator, "{s}/README.md", .{dir}); defer allocator.free(wr);
+    if (!fileExists(io, wr)) try writeFileGen(io, wr,
+        \\# Web4 Module — DID + x402
+        \\## Identity (DID)
+        \\- POST /web4/identity?tenantId=N&userId=N — create did:key identity
+        \\- GET /web4/identity?tenantId=N&userId=N — get identity
+        \\- DID resolver: `zigmodu.web4.resolve("did:key:z...")`
+        \\## Monetization (x402)
+        \\- POST /web4/invoice?tenantId=N&amount=N&currency=usdc — create invoice
+        \\- GET /web4/invoices?tenantId=N — list invoices
+        \\- Middleware: pass x402-tx-hash + x402-invoice-id headers
+        \\## VC (Verifiable Credentials)
+        \\- issueCredential(issuer, claims) — sign with Ed25519
+        \\- verifyCredential(issuer, vc) — verify proof
+        \\## Architecture
+        \\```
+        \\Client ──► x402 checkPayment() ──► API handler
+        \\              │ reject 402
+        \\              ▼
+        \\         Invoice → Payment → Proof → Access
+        \\```
+    , gen_opts);
 }
 
 fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []const u8, gen_opts: GenOptions) !void {
