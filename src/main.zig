@@ -4617,7 +4617,7 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\    pub fn run(self: *Agent, goal: []const u8, ctx: *zigmodu.ai.SkillContext, max_steps: usize) !AgentResult {
         \\        var steps: usize = 0; var last_answer: []const u8 = "";
         \\        while (steps < max_steps) : (steps += 1) {
-        \\            const prompt = try self.buildPrompt(goal, last_answer);
+        \\            const prompt = try self.buildPrompt(ctx, goal, last_answer);
         \\            const response = try self.chat_fn(self.chat_ctx, prompt);
         \\            if (self.parseToolCall(response)) |tc| {
         \\                const result = self.registry.dispatch(tc.name, ctx, .null) catch continue;
@@ -4628,7 +4628,17 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\        }
         \\        return .{ .answer = last_answer, .steps = steps };
         \\    }
-        \\    fn buildPrompt(self: *Agent, goal: []const u8, context: []const u8) ![]const u8 { _ = self; _ = context; return goal; }
+        \\    fn buildPrompt(self: *Agent, ctx: *zigmodu.ai.SkillContext, goal: []const u8, context: []const u8) ![]const u8 {
+        \\        var buf = std.ArrayList(u8).empty;
+        \\        try buf.appendSlice(ctx.allocator, "Goal: ");
+        \\        try buf.appendSlice(ctx.allocator, goal);
+        \\        try buf.appendSlice(ctx.allocator, "\n\nAvailable tools: ");
+        \\        var names: [32][]const u8 = undefined;
+        \\        const n = self.registry.names(&names);
+        \\        for (0..n) |i| { if (i > 0) try buf.appendSlice(ctx.allocator, ", "); try buf.appendSlice(ctx.allocator, names[i]); }
+        \\        if (context.len > 0) { try buf.appendSlice(ctx.allocator, "\nPrevious result: "); try buf.appendSlice(ctx.allocator, context); }
+        \\        return buf.toOwnedSlice(ctx.allocator);
+        \\    }
         \\    fn parseToolCall(self: *Agent, response: []const u8) ?ToolCall { _ = self; const tag = "\"name\":\""; if (std.mem.indexOf(u8, response, tag)) |s| { const ns = s + tag.len; if (std.mem.indexOf(u8, response[ns..], "\"")) |ne| { const name = response[ns .. ns + ne]; const at = "\"arguments\":\""; if (std.mem.indexOf(u8, response, at)) |as| { const a_s = as + at.len; if (std.mem.indexOf(u8, response[a_s..], "\"")) |ae| { return .{ .name = name, .args_json = response[a_s .. a_s + ae] }; } } } } return null; }
         \\    pub const AgentResult = struct { answer: []const u8, steps: usize };
         \\    pub const ChatFn = *const fn (*anyopaque, []const u8) anyerror![]const u8;
