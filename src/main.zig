@@ -4368,7 +4368,7 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
     try writeFileGen(io, model_path,
         \\pub const AiConversation = struct {
         \\    pub const sql_table_name: []const u8 = "ai_conversation";
-        \\    id: ?i64 = null, title: []const u8, model: []const u8 = "gpt-4o",
+        \\    id: ?i64 = null, title: []const u8, model: []const u8 = "deepseek-v4-flash",
         \\    system_prompt: ?[]const u8 = null, total_tokens: i64 = 0,
         \\    created_at: i64, updated_at: i64,
         \\};
@@ -4567,10 +4567,10 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
     const test_path = try std.fmt.allocPrint(allocator, "{s}/tests.zig", .{dir}); defer allocator.free(test_path);
     if (!fileExists(io, test_path)) try writeFileGen(io, test_path,
         \\const std = @import("std"); const testing = std.testing; const model = @import("model.zig"); const service = @import("service.zig"); const provider = @import("provider.zig"); const sse = @import("sse.zig");
-        \\test "model AiConversation defaults" { const c = model.AiConversation{ .id = null, .title = "test", .created_at = 0, .updated_at = 0 }; try testing.expectEqualStrings("gpt-4o", c.model); }
+        \\test "model AiConversation defaults" { const c = model.AiConversation{ .id = null, .title = "test", .created_at = 0, .updated_at = 0 }; try testing.expectEqualStrings("deepseek-v4-flash", c.model); }
         \\test "model AiMessage defaults" { const m = model.AiMessage{ .id = null, .conversation_id = 1, .role = "user", .content = "hi", .created_at = 0 }; try testing.expectEqual(@as(i64, 0), m.tokens); }
         \\test "service validateMessage rejects empty" { var svc = service.AiChatService{ .persistence = undefined }; try testing.expectError(error.ValidationFailed, svc.validateMessage("")); }
-        \\test "provider build chat request" { const a = testing.allocator; var p = provider.AiProvider.init(a, "https://api.openai.com/v1/chat/completions", "Bearer sk-xxx", "gpt-4o"); const msgs = [_]provider.AiProvider.ChatMsg{.{ .role = "user", .content = "hello" }}; const body = try p.chat(&msgs); defer a.free(body); try testing.expect(std.mem.indexOf(u8, body, "gpt-4o") != null); }
+        \\test "provider build chat request" { const a = testing.allocator; var p = provider.AiProvider.init(a, "https://api.openai.com/v1/chat/completions", "Bearer sk-xxx", "deepseek-v4-flash"); const msgs = [_]provider.AiProvider.ChatMsg{.{ .role = "user", .content = "hello" }}; const body = try p.chat(&msgs); defer a.free(body); try testing.expect(std.mem.indexOf(u8, body, "deepseek-v4-flash") != null); }
     , gen_opts);
 
     // ── README.md ──
@@ -4583,7 +4583,7 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
         \\var ai_provider = ai_chat.provider.AiProvider.init(allocator,
         \\    "https://api.openai.com/v1/chat/completions",
         \\    "Bearer sk-your-key",
-        \\    "gpt-4o");
+        \\    "deepseek-v4-flash");
         \\ai_chat_svc.setProvider(ai_provider);
         \\```
         \\### 2. Implement HTTP call in ext/service.zig
@@ -4638,7 +4638,7 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
     try writeFileGen(io, model_path,
         \\pub const AgentRun = struct { pub const sql_table_name: []const u8 = "ai_agent_run";
         \\    id: ?i64 = null, tenant_id: i64, user_id: i64, goal: []const u8, status: []const u8 = "pending",
-        \\    model: []const u8 = "gpt-4o", steps: i64 = 0, max_steps: i64 = 10,
+        \\    model: []const u8 = "deepseek-v4-flash", steps: i64 = 0, max_steps: i64 = 10,
         \\    result: ?[]const u8 = null, error_msg: ?[]const u8 = null, created_at: i64, updated_at: i64,
         \\};
         \\pub const AgentStep = struct { pub const sql_table_name: []const u8 = "ai_agent_step";
@@ -4702,7 +4702,7 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\        if (context.len > 0) { try buf.appendSlice(ctx.allocator, "\n\nPrevious steps:\n"); try buf.appendSlice(ctx.allocator, context); }
         \\        return buf.toOwnedSlice(ctx.allocator);
         \\    }
-        \\    fn parseToolCall(self: *Agent, response: []const u8) ?ToolCall { _ = self; const tag = "\"name\":\""; if (std.mem.indexOf(u8, response, tag)) |s| { const ns = s + tag.len; if (std.mem.indexOf(u8, response[ns..], "\"")) |ne| { const name = response[ns .. ns + ne]; const at = "\"arguments\":\""; if (std.mem.indexOf(u8, response, at)) |as| { const a_s = as + at.len; if (std.mem.indexOf(u8, response[a_s..], "\"")) |ae| { return .{ .name = name, .args_json = response[a_s .. a_s + ae] }; } } } } return null; }
+        \\    fn parseToolCall(self: *Agent, response: []const u8) ?ToolCall { _ = self; const tag = "\"name\":\""; if (std.mem.indexOf(u8, response, tag)) |s| { const ns = s + tag.len; if (std.mem.indexOf(u8, response[ns..], "\"")) |ne| { const name = response[ns .. ns + ne]; const at = "\"arguments\":\""; if (std.mem.indexOf(u8, response, at)) |as| { const a_s = as + at.len; var ae = a_s; while (ae < response.len and response[ae] != '"') : (ae += 1) {} return .{ .name = name, .args_json = response[a_s..ae] }; } } } return null; }
         \\    pub const AgentResult = struct { answer: []const u8, steps: usize };
         \\    pub const ChatFn = *const fn (*anyopaque, []const u8) anyerror![]const u8;
         \\    pub const ToolCall = struct { name: []const u8, args_json: []const u8 };
