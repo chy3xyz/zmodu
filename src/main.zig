@@ -3595,6 +3595,7 @@ const ScaffoldOpts = struct {
     with_websocket: bool = false,
     with_aichat: bool = false,
     with_agent: bool = false,
+    with_web4: bool = false,
 };
 
 fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !ScaffoldOpts {
@@ -3617,6 +3618,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var with_websocket: bool = false;
     var with_aichat: bool = false;
     var with_agent: bool = false;
+    var with_web4: bool = false;
 
     var db_dsn: ?[]const u8 = null;
 
@@ -3664,6 +3666,8 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             with_aichat = true;
         } else if (std.mem.eql(u8, args[i], "--with-agent")) {
             with_agent = true;
+        } else if (std.mem.eql(u8, args[i], "--with-web4")) {
+            with_web4 = true;
         } else if (std.mem.eql(u8, args[i], "--json-style")) {
             if (i + 1 >= args.len) return error.CliUsage;
             if (std.mem.eql(u8, args[i + 1], "camel")) json_style = .camel;
@@ -3701,6 +3705,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .with_websocket = with_websocket,
         .with_aichat = with_aichat,
         .with_agent = with_agent,
+        .with_web4 = with_web4,
     };
 }
 
@@ -4312,6 +4317,9 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     if (sopts.with_agent) {
         try generateAgentModule(io, allocator, project_dir, gen_opts);
     }
+    if (sopts.with_web4) {
+        try generateWeb4Module(io, allocator, project_dir, gen_opts);
+    }
 
     // 13. Generate .claude/skills/ — Claude Code agent skills
     try generateClaudeSkills(io, allocator, project_dir, gen_opts);
@@ -4760,6 +4768,111 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\## API: POST /ai/agent/run?goal=..., GET /ai/agent/runs
         \\## Skills: register via zigmodu.ai.SkillRegistry, agent dispatches automatically
         \\## Multi-tenant: agent runs scoped to tenant_id
+    , gen_opts);
+}
+
+fn generateWeb4Module(io: std.Io, allocator: std.mem.Allocator, project_dir: []const u8, gen_opts: GenOptions) !void {
+    const dir = try std.fmt.allocPrint(allocator, "{s}/src/modules/web4", .{project_dir}); defer allocator.free(dir);
+    try ensureDirGen(io, dir, gen_opts);
+    const ext_dir = try std.fmt.allocPrint(allocator, "{s}/ext", .{dir}); defer allocator.free(ext_dir);
+    try ensureDirGen(io, ext_dir, gen_opts);
+
+    // ── module.zig ──
+    const m = try std.fmt.allocPrint(allocator, "{s}/module.zig", .{dir}); defer allocator.free(m);
+    try writeFileGen(io, m,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu");
+        \\pub const info = zigmodu.api.Module{ .name = "web4", .description = "Web4: DID identity + x402 monetization", .dependencies = &.{}, .is_internal = false };
+        \\pub fn init() !void { std.log.info("[web4] ready", .{}); }
+        \\pub fn deinit() void {}
+        \\pub fn registerHealthChecks(e: *zigmodu.HealthEndpoint) !void { try e.registerCheck("web4", "Web4 module", zigmodu.HealthEndpoint.alwaysUp); }
+        \\pub const model = @import("model.zig"); pub const persistence = @import("persistence.zig");
+        \\pub const service = @import("service.zig"); pub const api = @import("api.zig");
+    , gen_opts);
+
+    // ── model.zig ──
+    const mp = try std.fmt.allocPrint(allocator, "{s}/model.zig", .{dir}); defer allocator.free(mp);
+    try writeFileGen(io, mp,
+        \\pub const Web4Identity = struct { pub const sql_table_name: []const u8 = "web4_identity";
+        \\    id: ?i64 = null, tenant_id: i64, user_id: i64, did: []const u8, did_doc: []const u8,
+        \\    public_key: []const u8, created_at: i64,
+        \\};
+        \\pub const Web4Invoice = struct { pub const sql_table_name: []const u8 = "web4_invoice";
+        \\    id: ?i64 = null, tenant_id: i64, invoice_id: []const u8, payee_did: []const u8,
+        \\    amount: i64, currency: []const u8, status: []const u8 = "pending",
+        \\    tx_hash: ?[]const u8 = null, created_at: i64, paid_at: ?i64 = null,
+        \\};
+    , gen_opts);
+
+    // ── persistence.zig ──
+    const pp = try std.fmt.allocPrint(allocator, "{s}/persistence.zig", .{dir}); defer allocator.free(pp);
+    try writeFileGen(io, pp,
+        \\const std = @import("std"); const data = @import("zigmodu").data; const model = @import("model.zig");
+        \\pub const Web4Persistence = struct { backend: data.SqlxBackend, orm: data.orm.Orm(data.SqlxBackend),
+        \\    pub fn init(b: data.SqlxBackend) Web4Persistence { return .{ .backend = b, .orm = .{ .backend = b } }; }
+        \\    pub fn identityRepo(self: *Web4Persistence) data.Repository(model.Web4Identity) { return .{ .orm = &self.orm }; }
+        \\    pub fn invoiceRepo(self: *Web4Persistence) data.Repository(model.Web4Invoice) { return .{ .orm = &self.orm }; }
+        \\};
+    , gen_opts);
+
+    // ── service.zig ──
+    const sp = try std.fmt.allocPrint(allocator, "{s}/service.zig", .{dir}); defer allocator.free(sp);
+    try writeFileGen(io, sp,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const model = @import("model.zig"); const persistence = @import("persistence.zig");
+        \\pub const Web4Service = struct { persistence: *persistence.Web4Persistence, allocator: std.mem.Allocator, io: std.Io,
+        \\    pub fn init(p: *persistence.Web4Persistence, a: std.mem.Allocator, i: std.Io) Web4Service { return .{ .persistence = p, .allocator = a, .io = i }; }
+        \\    pub fn createIdentity(self: *Web4Service, tenant_id: i64, user_id: i64) !model.Web4Identity {
+        \\        var did_key = zigmodu.web4.DidKey.generate(self.allocator, self.io);
+        \\        const doc = try did_key.document(self.allocator); defer self.allocator.free(doc);
+        \\        var repo = self.persistence.identityRepo();
+        \\        return try repo.insert(.{ .id = null, .tenant_id = tenant_id, .user_id = user_id, .did = did_key.did, .did_doc = doc, .public_key = "ed25519", .created_at = 0 });
+        \\    }
+        \\    pub fn createInvoice(self: *Web4Service, tenant_id: i64, amount: i64, currency: []const u8, payee_did: []const u8) !model.Web4Invoice {
+        \\        var repo = self.persistence.invoiceRepo();
+        \\        const inv_id = try std.fmt.allocPrint(self.allocator, "inv-{d}", .{@as(i64, @intCast(@intFromPtr(self)))}); defer self.allocator.free(inv_id);
+        \\        return try repo.insert(.{ .id = null, .tenant_id = tenant_id, .invoice_id = inv_id, .payee_did = payee_did, .amount = amount, .currency = currency, .created_at = 0 });
+        \\    }
+        \\    pub fn getIdentity(self: *Web4Service, tenant_id: i64, user_id: i64) !?model.Web4Identity { var repo = self.persistence.identityRepo(); _ = tenant_id; return try repo.findById(user_id); }
+        \\    pub fn getInvoices(self: *Web4Service, tenant_id: i64, page: usize, size: usize) !zigmodu.data.orm.PageResult(model.Web4Invoice) { _ = tenant_id; var repo = self.persistence.invoiceRepo(); return try repo.findPage(page, size); }
+        \\};
+    , gen_opts);
+
+    // ── api.zig ──
+    const ap = try std.fmt.allocPrint(allocator, "{s}/api.zig", .{dir}); defer allocator.free(ap);
+    try writeFileGen(io, ap,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const http = zigmodu.http; const service = @import("service.zig"); const model = @import("model.zig"); const R = @import("../../shared/response.zig");
+        \\pub const Web4Api = struct { service: *service.Web4Service,
+        \\    pub fn init(s: *service.Web4Service) Web4Api { return .{ .service = s }; }
+        \\    fn resolve(ctx: *http.Context) *Web4Api { return @ptrCast(@alignCast(ctx.user_data orelse unreachable)); }
+        \\    pub fn registerRoutes(self: *Web4Api, group: *http.RouteGroup) !void {
+        \\        try group.post("/web4/identity", createIdentity, @ptrCast(@alignCast(self)));
+        \\        try group.get("/web4/identity", getIdentity, @ptrCast(@alignCast(self)));
+        \\        try group.post("/web4/invoice", createInvoice, @ptrCast(@alignCast(self)));
+        \\        try group.get("/web4/invoices", listInvoices, @ptrCast(@alignCast(self)));
+        \\    }
+        \\    fn createIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); const ident = s.service.createIdentity(tid, uid) catch { try R.wrapErr(ctx, 500, "DID creation failed"); return; }; try R.wrapOk(ctx, ident); }
+        \\    fn getIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); if (try s.service.getIdentity(tid, uid)) |i| { try R.wrapOk(ctx, i); } else { try R.wrapErr(ctx, 1, "not found"); } }
+        \\    fn createInvoice(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const amt = ctx.queryInt(i64, "amount", 0); const cur = ctx.queryStr("currency", "usdc"); const inv = s.service.createInvoice(tid, amt, cur, "did:key:z...") catch { try R.wrapErr(ctx, 500, "invoice failed"); return; }; try R.wrapOk(ctx, inv); }
+        \\    fn listInvoices(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 10); const r = try s.service.getInvoices(tid, page, size); try R.wrapList(ctx, r); }
+        \\};
+    , gen_opts);
+
+    // ── ext/service.zig ──
+    const es = try std.fmt.allocPrint(allocator, "{s}/ext/service.zig", .{dir}); defer allocator.free(es);
+    if (!fileExists(io, es)) try writeFileGen(io, es,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const ext_svc = @import("../service.zig");
+        \\pub const Web4ServiceExt = struct { svc: *ext_svc.Web4Service; backend: zigmodu.data.SqlxBackend;
+        \\    pub fn init(svc: *ext_svc.Web4Service, backend: zigmodu.data.SqlxBackend) Web4ServiceExt { return .{ .svc = svc, .backend = backend }; }
+        \\};
+    , gen_opts);
+
+    // ── ext/api.zig ──
+    const ea = try std.fmt.allocPrint(allocator, "{s}/ext/api.zig", .{dir}); defer allocator.free(ea);
+    if (!fileExists(io, ea)) try writeFileGen(io, ea,
+        \\const std = @import("std"); const zigmodu = @import("zigmodu"); const http = zigmodu.http; const R = @import("../../../shared/response.zig"); const ext_svc = @import("service.zig");
+        \\pub const Web4ApiExt = struct { ext: *ext_svc.Web4ServiceExt;
+        \\    pub fn init(ext: *ext_svc.Web4ServiceExt) Web4ApiExt { return .{ .ext = ext }; }
+        \\    pub fn registerRoutes(self: *Web4ApiExt, group: *zigmodu.http.RouteGroup) !void { _ = self; _ = group; }
+        \\};
     , gen_opts);
 }
 
@@ -6780,6 +6893,17 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             \\
         );
     }
+    if (sopts.with_web4) {
+        try buf.appendSlice(allocator,
+            \\    // ── Web4: DID + x402 ──
+            \\    const web4 = @import("modules/web4/module.zig");
+            \\    var web4_p = web4.persistence.Web4Persistence.init(backend);
+            \\    var web4_svc = web4.service.Web4Service.init(&web4_p, allocator, init.io);
+            \\    var web4_api = web4.api.Web4Api.init(&web4_svc);
+            \\    try web4_api.registerRoutes(&root);
+            \\
+        );
+    }
 
     // Application lifecycle
     try buf.appendSlice(allocator, "\n    // -- Lifecycle --\n    var app = try zigmodu.Application.init(init.io, allocator, \"");
@@ -6798,6 +6922,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
     if (sopts.with_websocket) try buf.appendSlice(allocator, "im, ");
     if (sopts.with_aichat) try buf.appendSlice(allocator, "ai_chat, ");
     if (sopts.with_agent) try buf.appendSlice(allocator, "ai_agent, ");
+    if (sopts.with_web4) try buf.appendSlice(allocator, "web4, ");
     try buf.appendSlice(allocator, "}, .{});\n    defer app.deinit();\n\n    try app.start();\n    try server.start();\n}\n\nfn healthLive(ctx: *zigmodu.http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n\nfn healthReady(ctx: *zigmodu.http.Context) !void {\n    try ctx.json(200, \"{\\\"status\\\":\\\"UP\\\"}\");\n}\n");
 
     return buf.toOwnedSlice(allocator);
