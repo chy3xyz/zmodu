@@ -6043,7 +6043,7 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\# 2. zmodu generates full project
         \\zmodu scaffold --sql schema.sql --name <project> --with-events --with-resilience --with-metrics
         \\# 3. Verify: zig build (must be 0 errors)
-        \\# 4. AI fills: ext/service.zig + ext/api.zig only. Never edit generated files.
+        \\# 4. AI fills: add custom methods to service.zig, routes to api.zig.
         \\```
         \\
         \\## Mode 2: Brownfield (from SQL)
@@ -6065,10 +6065,10 @@ fn generateClaudeSkills(io: std.Io, allocator: std.mem.Allocator, out_dir: []con
         \\```
         \\
         \\## AI Edit Rules
-        \\### Safe to edit (survives regeneration):
-        \\`ext/service.zig` `ext/api.zig` `src/business/` `src/compat/` `tests/`
-        \\### NEVER edit (overwritten on regeneration):
-        \\`model.zig` `persistence.zig` `service.zig` `api.zig` `module.zig` `module.zig` `main.zig` `build.zig`
+        \\### All files marked @initialized are editable:
+        \\`model.zig` `persistence.zig` `service.zig` `api.zig` `module.zig` `main.zig` `build.zig`
+        \\### No ext/ needed — AI modifies generated files directly.
+        \\### After regeneration, AI merges schema changes manually.
         \\
         \\## Verify after every change
         \\```bash
