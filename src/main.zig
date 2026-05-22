@@ -161,8 +161,8 @@ fn isSafeModuleDirName(name: []const u8) bool {
 }
 
 /// Released tarball for `zmodu new` projects (hash from `zig build` / missing-hash hint, Zig 0.16).
-const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.9.9.tar.gz";
-const zigmodu_zon_hash = "zigmodu-0.9.9-U40vsxuLFAA4LX2x6liFnNdxEoABWnPTnf9Zccb3f8c_";
+const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.11.0.tar.gz";
+const zigmodu_zon_hash = "zigmodu-0.11.0-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -5961,7 +5961,7 @@ fn generateLifeDir(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8
     const dp = try std.fmt.allocPrint(allocator, "{s}/DNA.md", .{life_dir});
     defer allocator.free(dp);
     var dna: std.ArrayList(u8) = .empty;
-    try dna.print(allocator, "# {s}\ngenesis: zmodu scaffold\ntables: {d}\nmodules: {d}\nframework: zigmodu v0.10.0\nzig: 0.16.0\n", .{ project_name, table_count, module_count });
+    try dna.print(allocator, "# {s}\ngenesis: zmodu scaffold\ntables: {d}\nmodules: {d}\nframework: zigmodu v0.11.0\nzig: 0.16.0\n", .{ project_name, table_count, module_count });
     try writeFileGen(io, dp, dna.items, gen_opts);
 
     // manifest.json — compact
