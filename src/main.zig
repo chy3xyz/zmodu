@@ -4693,13 +4693,13 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\    }
         \\    fn buildPrompt(self: *Agent, ctx: *zigmodu.ai.SkillContext, goal: []const u8, context: []const u8) ![]const u8 {
         \\        var buf = std.ArrayList(u8).empty;
-        \\        try buf.appendSlice(ctx.allocator, "Goal: ");
+        \\        try buf.appendSlice(ctx.allocator, "You are an AI agent. Use tools to accomplish the goal. Call a tool with {{\"name\":\"tool_name\",\"arguments\":\"...\"}}. When done, respond directly.\n\nGoal: ");
         \\        try buf.appendSlice(ctx.allocator, goal);
-        \\        try buf.appendSlice(ctx.allocator, "\n\nAvailable tools: ");
+        \\        try buf.appendSlice(ctx.allocator, "\n\nTools: ");
         \\        var names: [32][]const u8 = undefined;
         \\        const n = self.registry.names(&names);
         \\        for (0..n) |i| { if (i > 0) try buf.appendSlice(ctx.allocator, ", "); try buf.appendSlice(ctx.allocator, names[i]); }
-        \\        if (context.len > 0) { try buf.appendSlice(ctx.allocator, "\nPrevious result: "); try buf.appendSlice(ctx.allocator, context); }
+        \\        if (context.len > 0) { try buf.appendSlice(ctx.allocator, "\n\nPrevious steps:\n"); try buf.appendSlice(ctx.allocator, context); }
         \\        return buf.toOwnedSlice(ctx.allocator);
         \\    }
         \\    fn parseToolCall(self: *Agent, response: []const u8) ?ToolCall { _ = self; const tag = "\"name\":\""; if (std.mem.indexOf(u8, response, tag)) |s| { const ns = s + tag.len; if (std.mem.indexOf(u8, response[ns..], "\"")) |ne| { const name = response[ns .. ns + ne]; const at = "\"arguments\":\""; if (std.mem.indexOf(u8, response, at)) |as| { const a_s = as + at.len; if (std.mem.indexOf(u8, response[a_s..], "\"")) |ae| { return .{ .name = name, .args_json = response[a_s .. a_s + ae] }; } } } } return null; }
