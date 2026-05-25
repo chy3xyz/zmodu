@@ -23,19 +23,30 @@ grep -rn "\.toOwnedSlice()" src/ | grep -v test      # Check missing allocator p
 
 ## Zig 0.16 Migration Patterns (Hard-Earned Knowledge)
 
-### ArrayList API Changes
+### ArrayList API — VERIFIED against Zig 0.16 source
+**Key finding: `ArrayList(T).init(gpa)` removed. `initCapacity(gpa, n)` pre-allocates but still requires explicit gpa for all mutations. `.empty` is the only universal creation method.**
+
 ```zig
-// ❌ Zig 0.15 — removed in 0.16
+// ❌ Zig 0.15 — ALL removed in 0.16
 var list = std.ArrayList(u8).init(allocator);
 list.append(item);
 list.deinit();
-return list.toOwnedSlice();
+list.toOwnedSlice();
 
-// ✅ Zig 0.16
+// ✅ Zig 0.16 — definitive pattern
 var list = std.ArrayList(u8).empty;
-list.append(allocator, item);
-list.deinit(allocator);
+defer list.deinit(allocator);
+try list.append(allocator, item);
+try list.insert(allocator, 0, item);
 return list.toOwnedSlice(allocator);
+
+// Struct field initialization
+.{ .field = std.ArrayList(T).empty, }
+
+// initCapacity: pre-allocates but still needs explicit gpa
+var list = try std.ArrayList(T).initCapacity(gpa, 10);
+defer list.deinit(gpa);  // gpa REQUIRED
+list.append(gpa, item);   // gpa REQUIRED
 ```
 
 ### Stream Writer API
