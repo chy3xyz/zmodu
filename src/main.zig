@@ -383,7 +383,7 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu v0.10.3", .{});
+    std.log.info("zmodu v0.14.0", .{});
 }
 
 fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
@@ -4419,67 +4419,19 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
     // ── provider.zig ──
     const prov_path = try std.fmt.allocPrint(allocator, "{s}/provider.zig", .{dir}); defer allocator.free(prov_path);
     try safeWrite(io, allocator, prov_path,
-        \\const std = @import("std");
-        \\pub const AiProvider = struct {
-        \\    allocator: std.mem.Allocator, endpoint: []const u8, api_key: []const u8, model: []const u8,
-        \\    pub fn init(a: std.mem.Allocator, endpoint: []const u8, api_key: []const u8, model: []const u8) AiProvider {
-        \\        return .{ .allocator = a, .endpoint = endpoint, .api_key = api_key, .model = model };
-        \\    }
-        \\    pub fn chat(self: *AiProvider, messages: []const ChatMsg) ![]const u8 {
-        \\        const body = try self.buildBody(messages); defer self.allocator.free(body);
-        \\        return body; // Stub: returns JSON body. Override in service.zig for real HTTP call.
-        \\    }
-        \\    pub fn buildBody(self: *AiProvider, messages: []const ChatMsg) ![]const u8 {
-        \\        var buf = std.ArrayList(u8).empty;
-        \\        try buf.appendSlice(self.allocator, "{\"model\":\"");
-        \\        try buf.appendSlice(self.allocator, self.model);
-        \\        try buf.appendSlice(self.allocator, "\",\"messages\":[");
-        \\        for (messages, 0..) |m, i| {
-        \\            if (i > 0) try buf.appendSlice(self.allocator, ",");
-        \\            try buf.appendSlice(self.allocator, "{\"role\":\"");
-        \\            try buf.appendSlice(self.allocator, m.role);
-        \\            try buf.appendSlice(self.allocator, "\",\"content\":\"");
-        \\            try buf.appendSlice(self.allocator, m.content);
-        \\            try buf.appendSlice(self.allocator, "\"}");
-        \\        }
-        \\        try buf.appendSlice(self.allocator, "]}");
-        \\        return buf.toOwnedSlice(self.allocator);
-        \\    }
-        \\    pub fn extractContent(self: *AiProvider, resp: []const u8) ![]const u8 {
-        \\        const tag = "\"content\":\"";
-        \\        if (std.mem.indexOf(u8, resp, tag)) |start| {
-        \\            const cs = start + tag.len;
-        \\            if (std.mem.indexOf(u8, resp[cs..], "\"")) |end| return self.allocator.dupe(u8, resp[cs .. cs + end]);
-        \\        }
-        \\        return error.NoContentFound;
-        \\    }
-        \\    pub const ChatMsg = struct { role: []const u8, content: []const u8 };
-        \\};
+        \\//! @initialized by zmodu — AI may modify freely
+        \\const zigmodu = @import("zigmodu");
+        \\pub const AiProvider = zigmodu.ai.AiProvider;
+        \\pub const ChatMsg = zigmodu.ai.AiProvider.ChatMsg;
+        \\pub const ChatResponse = zigmodu.ai.AiProvider.ChatResponse;
     , gen_opts);
 
     // ── sse.zig ──
     const sse_path = try std.fmt.allocPrint(allocator, "{s}/sse.zig", .{dir}); defer allocator.free(sse_path);
     try safeWrite(io, allocator, sse_path,
-        \\const std = @import("std");
+        \\//! @initialized by zmodu — AI may modify freely
         \\const zigmodu = @import("zigmodu");
-        \\pub const SseWriter = struct {
-        \\    ctx: *zigmodu.http.Context,
-        \\    pub fn init(ctx: *zigmodu.http.Context) !SseWriter {
-        \\        ctx.setHeader("Content-Type", "text/event-stream") catch {};
-        \\        ctx.setHeader("Cache-Control", "no-cache") catch {};
-        \\        ctx.setHeader("Connection", "keep-alive") catch {};
-        \\        ctx.status_code = 200; ctx.responded = true;
-        \\        return .{ .ctx = ctx };
-        \\    }
-        \\    pub fn send(self: *SseWriter, event: []const u8, data: []const u8) !void {
-        \\        var buf: [4096]u8 = undefined;
-        \\        const msg = try std.fmt.bufPrint(&buf, "event: {s}\ndata: {s}\n\n", .{ event, data });
-        \\        const stream = self.ctx.stream orelse return error.NoStream;
-        \\        var wb: [256]u8 = undefined; var w = stream.writer(self.ctx.io.?, &wb);
-        \\        try w.interface.writeAll(msg); try w.interface.flush();
-        \\    }
-        \\    pub fn done(self: *SseWriter) !void { try self.send("done", "[DONE]"); }
-        \\};
+        \\pub const SseWriter = zigmodu.http.SseWriter;
     , gen_opts);
 
     // ── service.zig ──
@@ -4493,29 +4445,115 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
         \\const provider_mod = @import("provider.zig");
         \\const sse_mod = @import("sse.zig");
         \\pub const AiChatService = struct {
+        \\    allocator: std.mem.Allocator,
         \\    persistence: *persistence.AiChatPersistence,
         \\    provider: ?provider_mod.AiProvider = null,
+        \\    memory: ?*zigmodu.ai.MemoryStore = null,
+        \\    system_prompt: ?[]const u8 = null,
         \\    max_context: usize = 20,
-        \\    pub fn init(p: *persistence.AiChatPersistence) AiChatService { return .{ .persistence = p }; }
+        \\    context_limit: usize = 128000,
+        \\    pub fn init(a: std.mem.Allocator, p: *persistence.AiChatPersistence) AiChatService {
+        \\        return .{ .allocator = a, .persistence = p };
+        \\    }
         \\    pub fn setProvider(self: *AiChatService, p: provider_mod.AiProvider) void { self.provider = p; }
+        \\    pub fn setMemory(self: *AiChatService, m: *zigmodu.ai.MemoryStore) void { self.memory = m; }
+        \\    pub fn setSystemPrompt(self: *AiChatService, sp: []const u8) void { self.system_prompt = sp; }
+        \\    /// Send message with multi-turn context. Cache-optimized message ordering.
         \\    pub fn send(self: *AiChatService, conv_id: i64, content: []const u8, sse: ?*sse_mod.SseWriter) !model.AiMessage {
         \\        var msg_repo = self.persistence.msgRepo();
         \\        _ = try msg_repo.insert(.{ .id = null, .conversation_id = conv_id, .role = "user", .content = content, .created_at = 0 });
         \\        if (self.provider) |*prov| {
-        \\            const msgs = &[_]provider_mod.AiProvider.ChatMsg{.{ .role = "user", .content = content }};
-        \\            const reply = try prov.chat(msgs);
-        \\            defer prov.allocator.free(reply);
-        \\            const saved = try msg_repo.insert(.{ .id = null, .conversation_id = conv_id, .role = "assistant", .content = reply, .created_at = 0 });
-        \\            if (sse) |s| try s.send("message", reply);
+        \\            // Load conversation context (multi-turn)
+        \\            var history = try self.getContext(conv_id);
+        \\            defer {
+        \\                for (history.items) |h| { self.allocator.free(h.role); self.allocator.free(h.content); }
+        \\                history.deinit(self.allocator);
+        \\            }
+        \\            // Load relevant memories
+        \\            var memories = std.ArrayList([]const u8).empty;
+        \\            defer memories.deinit(self.allocator);
+        \\            if (self.memory) |mem| {
+        \\                var recalled = try mem.recall(self.allocator, "user:pref", 0, 0);
+        \\                defer {
+        \\                    for (recalled.items) |e| { self.allocator.free(e.key); self.allocator.free(e.value); }
+        \\                    recalled.deinit(self.allocator);
+        \\                }
+        \\                for (recalled.items) |e| {
+        \\                    try memories.append(self.allocator, e.value);
+        \\                }
+        \\            }
+        \\            // Build cache-optimized messages: system → memories → history → query
+        \\            const msgs = try provider_mod.AiProvider.buildMessages(
+        \\                self.allocator,
+        \\                self.system_prompt,
+        \\                memories.items,
+        \\                history.items,
+        \\                content,
+        \\            );
+        \\            defer self.allocator.free(msgs);
+        \\            // Check token budget, summarize if needed
+        \\            if (!prov.fitsBudget(msgs, self.context_limit)) {
+        \\                const summary = try self.summarizeHistory(conv_id);
+        \\                defer self.allocator.free(summary);
+        \\                // Rebuild with summary instead of full history
+        \\                const summary_prefix = try std.fmt.allocPrint(self.allocator, "Previous conversation: {s}", .{summary});
+        \\                defer self.allocator.free(summary_prefix);
+        \\                const slim_history = &[_]provider_mod.ChatMsg{
+        \\                    .{ .role = "system", .content = summary_prefix },
+        \\                };
+        \\                const slim_msgs = try provider_mod.AiProvider.buildMessages(
+        \\                    self.allocator, self.system_prompt, memories.items, slim_history, content,
+        \\                );
+        \\                defer self.allocator.free(slim_msgs);
+        \\                const resp = try prov.chat(slim_msgs);
+        \\                defer self.allocator.free(resp.content);
+        \\                const saved = try msg_repo.insert(.{ .id = null, .conversation_id = conv_id, .role = "assistant", .content = resp.content, .tokens = @intCast(resp.completion_tokens), .created_at = 0 });
+        \\                if (sse) |s| try s.send("message", resp.content);
+        \\                return saved;
+        \\            }
+        \\            const resp = try prov.chat(msgs);
+        \\            defer self.allocator.free(resp.content);
+        \\            const saved = try msg_repo.insert(.{ .id = null, .conversation_id = conv_id, .role = "assistant", .content = resp.content, .tokens = @intCast(resp.completion_tokens), .created_at = 0 });
+        \\            if (sse) |s| try s.send("message", resp.content);
         \\            return saved;
         \\        }
         \\        return error.NoProvider;
         \\    }
-        \\    pub fn getContext(self: *AiChatService, conv_id: i64) !std.ArrayList(provider_mod.AiProvider.ChatMsg) {
-        \\        const list = std.ArrayList(provider_mod.AiProvider.ChatMsg).empty;
-        \\        _ = conv_id;
-        \\        _ = self;
+        \\    /// Load recent conversation history as ChatMsg array (multi-turn context).
+        \\    /// Override for filtered DB query in production.
+        \\    pub fn getContext(self: *AiChatService, conv_id: i64) !std.ArrayList(provider_mod.ChatMsg) {
+        \\        var list = std.ArrayList(provider_mod.ChatMsg).empty;
+        \\        var repo = self.persistence.msgRepo();
+        \\        // Load recent messages. Override with filtered query for large datasets.
+        \\        const page = try repo.findPage(0, self.max_context);
+        \\        for (page.items) |msg| {
+        \\            if (msg.conversation_id == conv_id) {
+        \\                try list.append(self.allocator, .{
+        \\                    .role = try self.allocator.dupe(u8, msg.role),
+        \\                    .content = try self.allocator.dupe(u8, msg.content),
+        \\                });
+        \\            }
+        \\        }
         \\        return list;
+        \\    }
+        \\    /// Summarize conversation history when over token budget.
+        \\    pub fn summarizeHistory(self: *AiChatService, conv_id: i64) ![]const u8 {
+        \\        var repo = self.persistence.msgRepo();
+        \\        const page = try repo.findPage(0, 50);
+        \\        var buf = std.ArrayList(u8).empty;
+        \\        try buf.appendSlice(self.allocator, "Summary of conversation: ");
+        \\        for (page.items) |item| {
+        \\            if (item.conversation_id != conv_id) continue;
+        \\            try buf.appendSlice(self.allocator, "[");
+        \\            try buf.appendSlice(self.allocator, item.role);
+        \\            try buf.appendSlice(self.allocator, "]: ");
+        \\            // Truncate long messages in summary
+        \\            const max_len = @min(item.content.len, 200);
+        \\            try buf.appendSlice(self.allocator, item.content[0..max_len]);
+        \\            if (item.content.len > 200) try buf.appendSlice(self.allocator, "...");
+        \\            try buf.appendSlice(self.allocator, " | ");
+        \\        }
+        \\        return buf.toOwnedSlice(self.allocator);
         \\    }
         \\    pub fn getHistory(self: *AiChatService, conv_id: i64, page: usize, size: usize) !data.orm.PageResult(model.AiMessage) {
         \\        var repo = self.persistence.msgRepo(); _ = conv_id; return try repo.findPage(page, size);
@@ -4593,52 +4631,48 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
     // ── tests.zig ──
     const test_path = try std.fmt.allocPrint(allocator, "{s}/tests.zig", .{dir}); defer allocator.free(test_path);
     if (!fileExists(io, test_path)) try safeWrite(io, allocator, test_path,
-        \\const std = @import("std"); const testing = std.testing; const model = @import("model.zig"); const service = @import("service.zig"); const provider = @import("provider.zig"); const sse = @import("sse.zig");
+        \\const std = @import("std"); const testing = std.testing; const zigmodu = @import("zigmodu"); const model = @import("model.zig"); const provider = @import("provider.zig");
         \\test "model AiConversation defaults" { const c = model.AiConversation{ .id = null, .title = "test", .created_at = 0, .updated_at = 0 }; try testing.expectEqualStrings("deepseek-v4-flash", c.model); }
         \\test "model AiMessage defaults" { const m = model.AiMessage{ .id = null, .conversation_id = 1, .role = "user", .content = "hi", .created_at = 0 }; try testing.expectEqual(@as(i64, 0), m.tokens); }
-        \\test "service validateMessage rejects empty" { var svc = service.AiChatService{ .persistence = undefined }; try testing.expectError(error.ValidationFailed, svc.validateMessage("")); }
-        \\test "provider build chat request" { const a = testing.allocator; var p = provider.AiProvider.init(a, "https://api.openai.com/v1/chat/completions", "Bearer sk-xxx", "deepseek-v4-flash"); const msgs = [_]provider.AiProvider.ChatMsg{.{ .role = "user", .content = "hello" }}; const body = try p.chat(&msgs); defer a.free(body); try testing.expect(std.mem.indexOf(u8, body, "deepseek-v4-flash") != null); }
+        \\test "provider buildMessages cache order" { const a = testing.allocator; const history = &[_]provider.ChatMsg{.{ .role = "user", .content = "old" }, .{ .role = "assistant", .content = "reply" }}; const memories = &[_][]const u8{"fact: likes coffee"}; const msgs = try provider.AiProvider.buildMessages(a, "You are helpful.", memories, history, "hello"); defer a.free(msgs); try testing.expectEqual(@as(usize, 5), msgs.len); try testing.expectEqualStrings("system", msgs[0].role); try testing.expectEqualStrings("You are helpful.", msgs[0].content); try testing.expectEqualStrings("system", msgs[1].role); try testing.expectEqualStrings("user", msgs[4].role); }
+        \\test "provider buildRequestBody" { const a = testing.allocator; var http = zigmodu.http.HttpClient.init(a, testing.io, 1, 5000); defer http.deinit(); var p = provider.AiProvider.init(a, &http, "https://api.test/v1", "Bearer sk-xxx", "deepseek-v4-flash"); const msgs = &[_]provider.ChatMsg{.{ .role = "system", .content = "You are helpful." }, .{ .role = "user", .content = "Hi" }}; const body = try p.buildRequestBody(msgs); defer a.free(body); try testing.expect(std.mem.indexOf(u8, body, "deepseek-v4-flash") != null); try testing.expect(std.mem.indexOf(u8, body, "\"role\":\"system\"") != null); }
+        \\test "provider estimateTokens" { const a = testing.allocator; var http = zigmodu.http.HttpClient.init(a, testing.io, 1, 5000); defer http.deinit(); var p = provider.AiProvider.init(a, &http, "https://api.test/v1", "Bearer sk-xxx", "deepseek-v4-flash"); const msgs = &[_]provider.ChatMsg{.{ .role = "system", .content = "You are helpful." }, .{ .role = "user", .content = "Hi" }}; const tokens = p.countTokens(msgs); try testing.expect(tokens > 5); try testing.expect(tokens < 50); }
     , gen_opts);
 
     // ── README.md ──
     const rm_path = try std.fmt.allocPrint(allocator, "{s}/README.md", .{dir}); defer allocator.free(rm_path);
     if (!fileExists(io, rm_path)) try safeWrite(io, allocator, rm_path,
         \\# AI Chat Module
-        \\## Quick Start (2 steps)
-        \\### 1. Set up provider in main.zig
+        \\Full docs: [zigmodu/docs/AI.md](https://github.com/chy3xyz/zigmodu/blob/main/docs/AI.md)
+        \\## Quick Start
         \\```zig
-        \\var ai_provider = ai_chat.provider.AiProvider.init(allocator,
-        \\    "https://api.openai.com/v1/chat/completions",
-        \\    "Bearer sk-your-key",
-        \\    "deepseek-v4-flash");
+        \\var http_client = zigmodu.http.HttpClient.init(allocator, io, 10, 30000);
+        \\defer http_client.deinit();
+        \\var ai_provider = ai_chat.provider.AiProvider.init(
+        \\    allocator, &http_client,
+        \\    "https://api.deepseek.com/v1/chat/completions",
+        \\    "Bearer sk-your-key", "deepseek-v4-flash",
+        \\);
         \\ai_chat_svc.setProvider(ai_provider);
-        \\```
-        \\### 2. Implement HTTP call in service.zig
-        \\Open `src/modules/ai/chat/service.zig` and add:
-        \\```zig
-        \\pub fn chat(self: *AiChatServiceExt, messages: []const provider.ChatMsg) ![]const u8 {{
-        \\    const body = try self.svc.provider.?.buildBody(messages);
-        \\    defer self.svc.provider.?.allocator.free(body);
-        \\    // POST to endpoint using your HTTP client of choice
-        \\    // Parse response, return content
-        \\    return self.svc.provider.?.extractContent(response_bytes);
-        \\}}
+        \\ai_chat_svc.setSystemPrompt("You are a helpful assistant.");
         \\```
         \\## API
         \\| Method | Path | Description |
         \\|--------|------|-------------|
-        \\| POST | /ai/chat/send | Send message, get AI reply |
+        \\| POST | /ai/chat/send?conversationId=N | Send message (multi-turn context) |
+        \\| POST | /ai/chat/stream?conversationId=N | SSE streaming reply |
         \\| GET | /ai/chat/conversations | List conversations |
         \\| GET | /ai/chat/messages?conversationId=N | Message history |
         \\| POST | /ai/chat/conversations | Create conversation |
         \\| DELETE | /ai/chat/conversations?id=N | Delete conversation |
-        \\## SSE Streaming
-        \\POST /ai/chat/stream for Server-Sent Events. Set `Accept: text/event-stream`.
-        \\## Provider Support
-        \\- OpenAI /v1/chat/completions
-        \\- Ollama /api/chat (localhost)
-        \\- Any OpenAI-compatible endpoint
-        \\Override the chat() method in service.zig to call your LLM endpoint.
+        \\## Features
+        \\- Multi-turn context loading
+        \\- Cache-optimized message ordering (DeepSeek V4)
+        \\- Token budget with auto-summarization
+        \\- Cross-session memory via MemoryStore
+        \\- SSE streaming via SseWriter
+        \\- Rate limiting via token bucket
+        \\- Connection pooling for high concurrency
     , gen_opts);
 }
 
@@ -6000,7 +6034,7 @@ fn generateLifeDir(io: std.Io, allocator: std.mem.Allocator, out_dir: []const u8
     const dp = try std.fmt.allocPrint(allocator, "{s}/DNA.md", .{life_dir});
     defer allocator.free(dp);
     var dna: std.ArrayList(u8) = .empty;
-    try dna.print(allocator, "# {s}\ngenesis: zmodu scaffold\ntables: {d}\nmodules: {d}\nframework: zigmodu v0.12.0\nzig: 0.16.0\n", .{ project_name, table_count, module_count });
+    try dna.print(allocator, "# {s}\ngenesis: zmodu scaffold\ntables: {d}\nmodules: {d}\nframework: zigmodu v0.13.0\nzig: 0.17.0\n", .{ project_name, table_count, module_count });
     try safeWrite(io, allocator, dp, dna.items, gen_opts);
 
     // manifest.json — compact
@@ -6967,7 +7001,7 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
             \\    // ── AI Chat ──
             \\    const ai_chat = @import("modules/ai/chat/module.zig");
             \\    var ai_chat_p = ai_chat.persistence.AiChatPersistence.init(backend);
-            \\    var ai_chat_svc = ai_chat.service.AiChatService.init(&ai_chat_p);
+            \\    var ai_chat_svc = ai_chat.service.AiChatService.init(allocator, &ai_chat_p);
             \\    var ai_chat_api = ai_chat.api.AiChatApi.init(&ai_chat_svc);
             \\    try ai_chat_api.registerRoutes(&root);
             \\
