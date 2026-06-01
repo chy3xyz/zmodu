@@ -1054,24 +1054,20 @@ fn generateAgentsMd(allocator: std.mem.Allocator, project_name: []const u8) ![]c
         \\zig build     # every edit must compile
         \\```
         \\
-        \\## 🚫 HARD BLOCK: Files you MUST NEVER edit
+        \\## 🟢 Files you CAN edit
         \\
-        \\These files are owned by `zmodu scaffold`. **Any edit will be overwritten.**
+        \\All files use `@initialized` model — AI may modify freely.
+        \\Re-scaffold with `--force` to overwrite; omit `--force` to get `.gen.new` diff.
         \\```
-        \\src/modules/<name>/model.zig        # ⛔ @generated
-        \\src/modules/<name>/persistence.zig  # ⛔ @generated
-        \\src/modules/<name>/service.zig      # ⛔ @generated
-        \\src/modules/<name>/api.zig          # ⛔ @generated
-        \\src/modules/<name>/module.zig       # ⛔ @generated
-        \\src/main.zig                        # ⛔ @generated
-        \\build.zig                            # ⛔ @generated
-        \\build.zig.zon                        # ⛔ @generated
+        \\src/modules/<name>/model.zig        # @initialized — extend freely
+        \\src/modules/<name>/persistence.zig  # @initialized — add custom queries
+        \\src/modules/<name>/service.zig      # @initialized — add business logic
+        \\src/modules/<name>/api.zig          # @initialized — add custom routes
+        \\src/modules/<name>/module.zig       # @initialized — add dependencies
+        \\src/main.zig                        # @initialized — wire providers, memory, guards
+        \\build.zig                            # @initialized — add C libs, test targets
+        \\build.zig.zon                        # @initialized — add dependencies
         \\```
-        \\
-        \\**If you need to change behavior in a generated file:**
-        \\- model changes → update schema.sql, re-run `zmodu scaffold`
-        \\- service changes → add methods in `service.zig`
-        \\- api changes → add routes in `api.zig`
         \\
         \\## File Markers
         \\
@@ -2657,8 +2653,34 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         var has_rules = false;
         for (table.columns) |col| {
             if (col.col_type == .unknown and col.name.len == 0) continue;
+            // Required non-nullable string fields with no default
             if (!col.nullable and !col.has_default and !col.is_primary_key and col.col_type == .string) {
                 try buf.print(allocator, "        if (entity.{s}.len == 0) return error.ValidationFailed;\n", .{col.name});
+                has_rules = true;
+            }
+            // Email format check
+            if (std.mem.containsAtLeast(u8, col.name, 1, "email") or std.mem.containsAtLeast(u8, col.name, 1, "mail")) {
+                try buf.print(allocator, "        if (entity.{s}.len > 0 and std.mem.indexOfScalar(u8, entity.{s}, '@') == null) return error.ValidationFailed;\n", .{ col.name, col.name });
+                has_rules = true;
+            }
+            // Numeric range check (positive values for amount/price/stock fields)
+            if (col.col_type == .int or col.col_type == .float) {
+                if (std.mem.containsAtLeast(u8, col.name, 1, "price") or
+                    std.mem.containsAtLeast(u8, col.name, 1, "amount") or
+                    std.mem.containsAtLeast(u8, col.name, 1, "stock") or
+                    std.mem.containsAtLeast(u8, col.name, 1, "quantity") or
+                    std.mem.containsAtLeast(u8, col.name, 1, "count"))
+                {
+                    try buf.print(allocator, "        if (entity.{s} < 0) return error.ValidationFailed;\n", .{col.name});
+                    has_rules = true;
+                }
+            }
+            // Status/role/type enum check — warn via comment
+            if (std.mem.containsAtLeast(u8, col.name, 1, "status") or
+                std.mem.containsAtLeast(u8, col.name, 1, "role") or
+                std.mem.containsAtLeast(u8, col.name, 1, "type"))
+            {
+                try buf.print(allocator, "        // TODO: validate entity.{s} against allowed enum values\n", .{col.name});
                 has_rules = true;
             }
         }
@@ -3924,7 +3946,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\        const s = resolve2(ctx);
             \\        const pn = ctx.queryInt(usize, \"pageNo\", 1);
             \\        const ps = ctx.queryInt(usize, \"pageSize\", 10);
-            \\        const r = s.ext.svc.list{s}(if (pn > 0) pn - 1 else 0, ps) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(if (pn > 0) pn - 1 else 0, ps) catch {{ try R.wrapErr(ctx, .server_error, \"Query failed\"); return; }};
             \\        try R.wrapList(ctx, r);
             \\    }}
             \\    fn hDeleteList(ctx: *http.Context) !void {{
@@ -3940,12 +3962,12 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
             \\    }}
             \\    fn hSimple(ctx: *http.Context) !void {{
             \\        const s = resolve2(ctx);
-            \\        const r = s.ext.svc.list{s}(0, 1000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(0, 1000) catch {{ try R.wrapErr(ctx, .server_error, \"Query failed\"); return; }};
             \\        try R.wrapList(ctx, r);
             \\    }}
             \\    fn hExport(ctx: *http.Context) !void {{
             \\        const s = resolve2(ctx);
-            \\        const r = s.ext.svc.list{s}(0, 10000) catch {{ try R.wrapErr(ctx, 500, \"Query failed\"); return; }};
+            \\        const r = s.ext.svc.list{s}(0, 10000) catch {{ try R.wrapErr(ctx, .server_error, \"Query failed\"); return; }};
             \\        var buf = std.ArrayList(u8).empty;
             \\        try buf.append(ctx.allocator, \"id,name\\n\");
             \\        for (r.items) |item| {{ _ = item; try buf.appendSlice(ctx.allocator, \"\\n\"); }}
@@ -4184,6 +4206,17 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         \\    Conflict,
         \\}};
         \\
+        \\/// Business error codes for API responses.
+        \\pub const BizCode = enum(i32) {{
+        \\    success = 0,
+        \\    not_found = 404,
+        \\    validation_failed = 422,
+        \\    unauthorized = 401,
+        \\    forbidden = 403,
+        \\    conflict = 409,
+        \\    server_error = 500,
+        \\}};
+        \\
     , .{});
     defer allocator.free(shared_errors);
     const shared_errors_path = try std.fmt.allocPrint(allocator, "{s}/errors.zig", .{shared_dir});
@@ -4193,11 +4226,11 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     // shared/response.zig — RuoYi-style API response helpers
     var shared_buf: std.ArrayList(u8) = .empty;
     defer shared_buf.deinit(allocator);
-    try shared_buf.appendSlice(allocator, "//! RuoYi-style API response helpers\nconst std = @import(\"std\");\nconst http = @import(\"zigmodu\").http;\n\n");
+    try shared_buf.appendSlice(allocator, "//! RuoYi-style API response helpers\nconst std = @import(\"std\");\nconst http = @import(\"zigmodu\").http;\nconst BizCode = @import(\"errors.zig\").BizCode;\n\n");
     try shared_buf.appendSlice(allocator, "pub fn wrapOk(ctx: *http.Context, value: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, value, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{s}}}\", .{inner});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
     try shared_buf.appendSlice(allocator, "pub fn wrapList(ctx: *http.Context, result: anytype) !void {\n    const inner = try std.json.Stringify.valueAlloc(ctx.allocator, result.items, .{});\n    defer ctx.allocator.free(inner);\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":{{\\\"list\\\":{s},\\\"total\\\":{d}}}}}\", .{inner, result.total});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n\n");
     try shared_buf.appendSlice(allocator, "pub fn wrapSuccess(ctx: *http.Context) !void {\n    try ctx.json(200, \"{{\\\"code\\\":0,\\\"msg\\\":\\\"\\\",\\\"data\\\":null}}\");\n}\n\n");
-    try shared_buf.appendSlice(allocator, "pub fn wrapErr(ctx: *http.Context, errcode: i32, errmsg: []const u8) !void {\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":{d},\\\"msg\\\":\\\"{s}\\\",\\\"data\\\":null}}\", .{errcode, errmsg});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n");
+    try shared_buf.appendSlice(allocator, "pub fn wrapErr(ctx: *http.Context, code: BizCode, errmsg: []const u8) !void {\n    const json = try std.fmt.allocPrint(ctx.allocator, \"{{\\\"code\\\":{d},\\\"msg\\\":\\\"{s}\\\",\\\"data\\\":null}}\", .{@intFromEnum(code), errmsg});\n    defer ctx.allocator.free(json);\n    try ctx.json(200, json);\n}\n");
     const shared_response = try shared_buf.toOwnedSlice(allocator);
     defer allocator.free(shared_response);
     const shared_response_path = try std.fmt.allocPrint(allocator, "{s}/response.zig", .{shared_dir});
@@ -4589,7 +4622,7 @@ fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: [
         \\        try group.post("/ai/chat/conversations", createConversation, @ptrCast(@alignCast(self)));
         \\        try group.delete("/ai/chat/conversations", deleteConversation, @ptrCast(@alignCast(self)));
         \\    }
-        \\    fn sendMessage(ctx: *http.Context) !void { const s = resolve(ctx); const content = ctx.body orelse { try R.wrapErr(ctx, 1, "empty body"); return; }; const conv_id = ctx.queryInt(i64, "conversationId", 0); if (conv_id == 0) { try R.wrapErr(ctx, 1, "missing conversationId"); return; } const result = s.service.send(conv_id, content, null) catch { try R.wrapErr(ctx, 500, "AI error"); return; }; try R.wrapOk(ctx, result); }
+        \\    fn sendMessage(ctx: *http.Context) !void { const s = resolve(ctx); const content = ctx.body orelse { try R.wrapErr(ctx, 1, "empty body"); return; }; const conv_id = ctx.queryInt(i64, "conversationId", 0); if (conv_id == 0) { try R.wrapErr(ctx, 1, "missing conversationId"); return; } const result = s.service.send(conv_id, content, null) catch { try R.wrapErr(ctx, .server_error, "AI error"); return; }; try R.wrapOk(ctx, result); }
         \\    fn listConversations(ctx: *http.Context) !void { const s = resolve(ctx); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 10); const r = try s.service.getConversations(page, size); try R.wrapList(ctx, r); }
         \\    fn listMessages(ctx: *http.Context) !void { const s = resolve(ctx); const cid = ctx.queryInt(i64, "conversationId", 0); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 20); const r = try s.service.getHistory(cid, page, size); try R.wrapList(ctx, r); }
         \\    fn createConversation(ctx: *http.Context) !void { const s = resolve(ctx); const title = ctx.queryStr("title", "New Chat"); const conv = try s.service.createConversation(title); try R.wrapOk(ctx, conv); }
@@ -4799,9 +4832,9 @@ fn generateAgentModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []
         \\        try group.get("/ai/agent/runs", listRuns, @ptrCast(@alignCast(self)));
         \\        try group.get("/ai/agent/runs/get", getRun, @ptrCast(@alignCast(self)));
         \\    }
-        \\    fn runAgent(ctx: *http.Context) !void { const s = resolve(ctx); const goal = ctx.queryStr("goal", ""); if (goal.len == 0) { try R.wrapErr(ctx, 1, "missing goal"); return; } var skill_ctx = zigmodu.ai.SkillContext{ .allocator = ctx.allocator }; const result = s.service.run(goal, &skill_ctx) catch { try R.wrapErr(ctx, 500, "agent error"); return; }; try R.wrapOk(ctx, result); }
+        \\    fn runAgent(ctx: *http.Context) !void { const s = resolve(ctx); const goal = ctx.queryStr("goal", ""); if (goal.len == 0) { try R.wrapErr(ctx, 1, "missing goal"); return; } var skill_ctx = zigmodu.ai.SkillContext{ .allocator = ctx.allocator }; const result = s.service.run(goal, &skill_ctx) catch { try R.wrapErr(ctx, .server_error, "agent error"); return; }; try R.wrapOk(ctx, result); }
         \\    fn listRuns(ctx: *http.Context) !void { const s = resolve(ctx); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 10); const tid = ctx.queryInt(i64, "tenantId", 0); const r = try s.service.getRuns(tid, page, size); try R.wrapList(ctx, r); }
-        \\    fn getRun(ctx: *http.Context) !void { const s = resolve(ctx); const id = ctx.queryInt(i64, "id", 0); if (try s.service.getRun(id)) |run| { try R.wrapOk(ctx, run); } else { try R.wrapErr(ctx, 1, "not found"); } }
+        \\    fn getRun(ctx: *http.Context) !void { const s = resolve(ctx); const id = ctx.queryInt(i64, "id", 0); if (try s.service.getRun(id)) |run| { try R.wrapOk(ctx, run); } else { try R.wrapErr(ctx, .not_found, "not found"); } }
         \\};
     , gen_opts);
 
@@ -4932,9 +4965,9 @@ fn generateWeb4Module(io: std.Io, allocator: std.mem.Allocator, project_dir: []c
         \\        try group.post("/web4/invoice", createInvoice, @ptrCast(@alignCast(self)));
         \\        try group.get("/web4/invoices", listInvoices, @ptrCast(@alignCast(self)));
         \\    }
-        \\    fn createIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); const ident = s.service.createIdentity(tid, uid) catch { try R.wrapErr(ctx, 500, "DID creation failed"); return; }; try R.wrapOk(ctx, ident); }
-        \\    fn getIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); if (try s.service.getIdentity(tid, uid)) |i| { try R.wrapOk(ctx, i); } else { try R.wrapErr(ctx, 1, "not found"); } }
-        \\    fn createInvoice(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const amt = ctx.queryInt(i64, "amount", 0); const cur = ctx.queryStr("currency", "usdc"); const inv = s.service.createInvoice(tid, amt, cur, "did:key:z...") catch { try R.wrapErr(ctx, 500, "invoice failed"); return; }; try R.wrapOk(ctx, inv); }
+        \\    fn createIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); const ident = s.service.createIdentity(tid, uid) catch { try R.wrapErr(ctx, .server_error, "DID creation failed"); return; }; try R.wrapOk(ctx, ident); }
+        \\    fn getIdentity(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const uid = ctx.queryInt(i64, "userId", 0); if (try s.service.getIdentity(tid, uid)) |i| { try R.wrapOk(ctx, i); } else { try R.wrapErr(ctx, .not_found, "not found"); } }
+        \\    fn createInvoice(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const amt = ctx.queryInt(i64, "amount", 0); const cur = ctx.queryStr("currency", "usdc"); const inv = s.service.createInvoice(tid, amt, cur, "did:key:z...") catch { try R.wrapErr(ctx, .server_error, "invoice failed"); return; }; try R.wrapOk(ctx, inv); }
         \\    fn listInvoices(ctx: *http.Context) !void { const s = resolve(ctx); const tid = ctx.queryInt(i64, "tenantId", 0); const page = ctx.queryInt(usize, "pageNo", 1); const size = ctx.queryInt(usize, "pageSize", 10); const r = try s.service.getInvoices(tid, page, size); try R.wrapList(ctx, r); }
         \\};
     , gen_opts);
@@ -5548,11 +5581,11 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
         \\    fn sendMessage(ctx: *http.Context) !void {
         \\        const s = resolve(ctx);
         \\        const msg = ctx.bindJson(model.Message) catch {
-        \\            try R.wrapErr(ctx, 1, "invalid body");
+        \\            try R.wrapErr(ctx, .validation_failed, "invalid body");
         \\            return;
         \\        };
         \\        s.service.validateMessage(msg) catch {
-        \\            try R.wrapErr(ctx, 1, "validation failed");
+        \\            try R.wrapErr(ctx, .validation_failed, "validation failed");
         \\            return;
         \\        };
         \\        const saved = try s.service.send(msg);
