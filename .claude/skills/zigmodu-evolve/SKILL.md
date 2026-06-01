@@ -397,6 +397,32 @@ git describe --tags
 
 ## Evolution Log
 
+### 2026-06-02: Generated code quality + router bug fixes + security hardening
+
+**Router wildcard priority bug**: exact route must take priority over wildcard child.
+`/crm/statistics` with both exact route and `*` child → wildcard won, returning `*` handler instead of exact match. Fixed by swapping priority order in match() after-loop check.
+
+**Router debug logging**: added `std.log.debug("[Router] no match: {s} {s}")` on match failure for easier 404 troubleshooting.
+
+**zig build cache issue**: if modified source produces same output, delete `.zig-cache` directory completely (not just `zig build --force`).
+
+**zmodu generator quality improvements (5 fixes)**:
+1. `@generated` → `@initialized` headers in 8 ORM templates + AGENTS.md
+2. Typed `BizCode` enum replacing magic numbers in `wrapErr()`
+3. Enhanced validation: email `@` check, numeric range (amount/price/stock), enum TODO hints
+4. Multi-tenant isolation: `listByTenant(page, size, tenant_id)` + `getByTenant(id, tenant_id)` auto-generated for tables with `tenant_id` column
+5. EventBus integration: `publish(.XXXCreated/Updated/Deleted)` on CUD operations when `--with-events`
+
+**Security hardening (4 new modules)**:
+- `SecurityHeaders.zig`: HSTS, X-Frame-Options, X-Content-Type-Options, Referrer-Policy
+- `Csrf.zig`: double-submit cookie CSRF protection with CSPRNG
+- `PathSanitizer.zig`: path traversal prevention (rejects `..`, null bytes, `/`, `\`)
+- `SecurityModule.zig`: `authRateLimitMiddleware` for brute-force prevention
+
+**Performance**: request-scoped ArenaAllocator, ConnectionEntry object pool (0 hot-path allocs), @branchHint on CircuitBreaker/RateLimiter, fiber stack 8MB→128KB config.
+
+**Releases**: zigmodu v0.13.0, zmodu v0.14.0
+
 ### 2026-05-27: Zig 0.17 migration + AI module consolidation
 - **Array multiplication `**` removed** — replaced by `@splat()` across 6 files (13 occurrences)
 - **`allocator.dupeZ` removed** — replaced with `allocSentinel` + `@memcpy` helper
