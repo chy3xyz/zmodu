@@ -2626,19 +2626,45 @@ fn generateModuleService(allocator: std.mem.Allocator, module_name: []const u8, 
         try buf.appendSlice(allocator, "        return try repo.findById(id);\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
+        // Tenant-aware variants if table has tenant_id
+        const has_tenant = for (table.columns) |col| {
+            if (std.mem.eql(u8, col.name, "tenant_id")) break true;
+        } else false;
+        if (has_tenant) {
+            try buf.print(allocator, "    pub fn {s}(self: *{s}Service, page: usize, size: usize, tenant_id: i64) !data.orm.PageResult(model.{s}) {{\n", .{ list_method, pascal_module, model_name });
+            try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
+            try buf.print(allocator, "        return try repo.findPageFiltered(self.persistence.backend.allocator, \"WHERE tenant_id = ?\", &.{{zigmodu.data.sqlx.Value.int(tenant_id)}}, page, size);\n", .{});
+            try buf.appendSlice(allocator, "    }\n\n");
+            try buf.print(allocator, "    pub fn get{s}ByTenant(self: *{s}Service, id: {s}, tenant_id: i64) !?model.{s} {{\n", .{ model_name, pascal_module, pk_type, model_name });
+            try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
+            try buf.appendSlice(allocator, "        const entity = try repo.findById(id);\n");
+            try buf.appendSlice(allocator, "        return if (entity != null and entity.?.tenant_id != null and entity.?.tenant_id.? == tenant_id) entity else null;\n");
+            try buf.appendSlice(allocator, "    }\n\n");
+        }
+
         try buf.print(allocator, "    pub fn create{s}(self: *{s}Service, entity: model.{s}) !model.{s} {{\n", .{ model_name, pascal_module, model_name, model_name });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
-        try buf.appendSlice(allocator, "        return try repo.insert(entity);\n");
+        try buf.appendSlice(allocator, "        const created = try repo.insert(entity);\n");
+        if (enable_events) {
+            try buf.print(allocator, "        self.publish(.{{ .{s}Created = .{{ .id = created.id.? }} }});\n", .{model_name});
+        }
+        try buf.appendSlice(allocator, "        return created;\n");
         try buf.appendSlice(allocator, "    }\n\n");
 
         try buf.print(allocator, "    pub fn update{s}(self: *{s}Service, entity: model.{s}) !void {{\n", .{ model_name, pascal_module, model_name });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
-        try buf.appendSlice(allocator, "        return try repo.update(entity);\n");
+        try buf.appendSlice(allocator, "        try repo.update(entity);\n");
+        if (enable_events) {
+            try buf.print(allocator, "        self.publish(.{{ .{s}Updated = .{{ .id = entity.id.? }} }});\n", .{model_name});
+        }
         try buf.appendSlice(allocator, "    }\n\n");
 
         try buf.print(allocator, "    pub fn delete{s}(self: *{s}Service, id: {s}) !void {{\n", .{ model_name, pascal_module, pk_type });
         try buf.print(allocator, "        var repo = self.persistence.{s}Repo();\n", .{method_name});
-        try buf.appendSlice(allocator, "        return try repo.delete(id);\n");
+        try buf.appendSlice(allocator, "        try repo.delete(id);\n");
+        if (enable_events) {
+            try buf.print(allocator, "        self.publish(.{{ .{s}Deleted = .{{ .id = id }} }});\n", .{model_name});
+        }
         try buf.appendSlice(allocator, "    }\n\n");
 
         if (with_transactions) {
@@ -4237,13 +4263,25 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
     defer allocator.free(shared_response_path);
     try safeWrite(io, allocator, shared_response_path, shared_response, gen_opts);
 
-    // shared/events.zig — event type catalog (skeleton)
+    // shared/events.zig — event type catalog
     if (gen_opts.enable_events) {
-        const shared_events = try std.fmt.allocPrint(allocator,
-            \\//! Shared event catalog — extends per-module events.
-            \\//! Used with zigmodu.EventBus for cross-module messaging.
+        var evt_buf: std.ArrayList(u8) = .empty;
+        defer evt_buf.deinit(allocator);
+        try evt_buf.appendSlice(allocator,
+            \\//! Shared event catalog — typed events for cross-module messaging.
+            \\//! Used with zigmodu.EventBus(Event) for publish/subscribe.
+            \\pub const Event = union(enum) {
             \\
-        , .{});
+        );
+        for (module_names.items) |mod_name| {
+            const pascal = try toPascalCase(allocator, mod_name);
+            defer allocator.free(pascal);
+            try evt_buf.print(allocator, "    {s}Created: struct {{ id: i64 }},\n", .{pascal});
+            try evt_buf.print(allocator, "    {s}Updated: struct {{ id: i64 }},\n", .{pascal});
+            try evt_buf.print(allocator, "    {s}Deleted: struct {{ id: i64 }},\n", .{pascal});
+        }
+        try evt_buf.appendSlice(allocator, "};\n");
+        const shared_events = try evt_buf.toOwnedSlice(allocator);
         defer allocator.free(shared_events);
         const shared_events_path = try std.fmt.allocPrint(allocator, "{s}/events.zig", .{shared_dir});
         defer allocator.free(shared_events_path);
