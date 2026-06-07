@@ -161,8 +161,8 @@ fn isSafeModuleDirName(name: []const u8) bool {
 }
 
 /// Released tarball for `zmodu new` projects (hash from `zig build` / missing-hash hint, Zig 0.16).
-const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.12.0.tar.gz";
-const zigmodu_zon_hash = "zigmodu-0.11.0-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+const zigmodu_zon_url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.13.3.tar.gz";
+const zigmodu_zon_hash = "zigmodu-0.13.3-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
 
 pub fn main(init: std.process.Init) !void {
     const allocator = init.gpa;
@@ -630,7 +630,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
         \\# Project AI Context
         \\
         \\## Stack
-        \\- Framework: zmodu v0.10.3 (Zig 0.16.0)
+        \\- Framework: zmodu v0.14.4 (Zig 0.17)
         \\- Database: MySQL/PostgreSQL/SQLite via sqlx
         \\- HTTP: zigmodu.http.Server (async fiber-based)
         \\
@@ -858,7 +858,7 @@ fn generateBuildZonImpl(allocator: std.mem.Allocator, project_name: []const u8, 
             \\    .name = .{s},
             \\    .version = "0.1.0",
             \\    .fingerprint = 0x{x},
-            \\    .minimum_zig_version = "0.16.0",
+            \\    .minimum_zig_version = "0.17.0",
             \\    .dependencies = .{{
             \\        .zigmodu = .{{
             \\            .url = "{s}",
@@ -878,7 +878,7 @@ fn generateBuildZonImpl(allocator: std.mem.Allocator, project_name: []const u8, 
         \\.{{
         \\    .name = .{s},
         \\    .version = "0.1.0",
-        \\    .minimum_zig_version = "0.16.0",
+        \\    .minimum_zig_version = "0.17.0",
         \\    .dependencies = .{{
         \\        .zigmodu = .{{
         \\            .url = "{s}",
@@ -4450,7 +4450,7 @@ fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u
         \\# Project AI Context
         \\
         \\## Stack
-        \\- Framework: zmodu v0.10.3 (Zig 0.16.0)
+        \\- Framework: zmodu v0.14.4 (Zig 0.17)
         \\- Database: MySQL/PostgreSQL/SQLite via sqlx
         \\- HTTP: zigmodu.http.Server (async fiber-based)
         \\
