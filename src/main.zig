@@ -826,9 +826,6 @@ fn generateBuildZig(allocator: std.mem.Allocator, project_name: []const u8) ![]c
     try buf.appendSlice(allocator, "\n");
     try buf.appendSlice(allocator, "    const run_cmd = b.addRunArtifact(exe);\n");
     try buf.appendSlice(allocator, "    run_cmd.step.dependOn(b.getInstallStep());\n");
-    try buf.appendSlice(allocator, "    if (b.args) |args| {\n");
-    try buf.appendSlice(allocator, "        run_cmd.addArgs(args);\n");
-    try buf.appendSlice(allocator, "    }\n");
     try buf.appendSlice(allocator, "\n");
     try buf.appendSlice(allocator, "    const run_step = b.step(\"run\", \"Run the app\");\n");
     try buf.appendSlice(allocator, "    run_step.dependOn(&run_cmd.step);\n");
