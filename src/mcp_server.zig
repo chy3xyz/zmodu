@@ -255,11 +255,11 @@ fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![
     const old_tables = main_mod.parseSqlSchema(allocator, old_sql) catch |err| {
         return std.fmt.allocPrint(allocator, "{{\"error\":\"parse old SQL failed: {}\"}}", .{err});
     };
-    defer allocator.free(old_tables);
+    defer main_mod.freeTableDefs(allocator, old_tables);
     const new_tables = main_mod.parseSqlSchema(allocator, new_sql) catch |err| {
         return std.fmt.allocPrint(allocator, "{{\"error\":\"parse new SQL failed: {}\"}}", .{err});
     };
-    defer allocator.free(new_tables);
+    defer main_mod.freeTableDefs(allocator, new_tables);
 
     const diffs = sql_diff.diffTables(allocator, old_tables, new_tables) catch |err| {
         return std.fmt.allocPrint(allocator, "{{\"error\":\"diff failed: {}\"}}", .{err});

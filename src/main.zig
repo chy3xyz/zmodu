@@ -535,12 +535,12 @@ fn cmdDiff(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !
         std.log.err("Failed to parse old SQL: {}", .{err});
         return error.CliUsage;
     };
-    defer allocator.free(old_tables);
+    defer freeTableDefs(allocator, old_tables);
     const new_tables = parseSqlSchema(allocator, new_sql) catch |err| {
         std.log.err("Failed to parse new SQL: {}", .{err});
         return error.CliUsage;
     };
-    defer allocator.free(new_tables);
+    defer freeTableDefs(allocator, new_tables);
 
     const diffs = sql_diff.diffTables(allocator, old_tables, new_tables) catch |err| {
         std.log.err("Diff failed: {}", .{err});
@@ -1788,6 +1788,25 @@ pub fn parseSqlSchema(allocator: std.mem.Allocator, sql: []const u8) ![]TableDef
         }
     }
     return tables.toOwnedSlice(allocator);
+}
+
+/// Free all memory owned by a slice of TableDefs (including internal strings).
+pub fn freeTableDefs(allocator: std.mem.Allocator, tables: []const TableDef) void {
+    for (tables) |t| {
+        allocator.free(t.name);
+        for (t.columns) |c| {
+            allocator.free(c.name);
+            if (c.comment) |cm| allocator.free(cm);
+        }
+        allocator.free(t.columns);
+        for (t.foreign_keys) |fk| {
+            allocator.free(fk.column_name);
+            allocator.free(fk.ref_table);
+            allocator.free(fk.ref_column);
+        }
+        allocator.free(t.foreign_keys);
+    }
+    allocator.free(tables);
 }
 
 /// Find the longest common prefix (up to and including '_') shared by all table names.
