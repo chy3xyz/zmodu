@@ -234,14 +234,17 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
         allocator.free(report.summary);
     }
 
-    // Build detailed JSON output
+    // Build detailed JSON output with proper escaping
     var parts = std.ArrayList(u8).empty;
     defer parts.deinit(allocator);
 
     try parts.appendSlice(allocator, "{\"pass\":");
     try parts.appendSlice(allocator, if (report.pass) "true" else "false");
+
+    const esc_summary = try jsonEscape(allocator, report.summary);
+    defer allocator.free(esc_summary);
     try parts.appendSlice(allocator, ",\"summary\":\"");
-    try parts.appendSlice(allocator, report.summary);
+    try parts.appendSlice(allocator, esc_summary);
     try parts.appendSlice(allocator, "\",\"checks\":[");
     for (report.checks, 0..) |c, i| {
         if (i > 0) try parts.appendSlice(allocator, ",");
@@ -251,12 +254,16 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
             .warn => "warn",
             .skip => "skip",
         };
+        const esc_name = try jsonEscape(allocator, c.name);
+        defer allocator.free(esc_name);
         if (c.details) |d| {
-            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\",\"details\":\"{s}\"}}", .{ c.name, status_str, d });
+            const esc_details = try jsonEscape(allocator, d);
+            defer allocator.free(esc_details);
+            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\",\"details\":\"{s}\"}}", .{ esc_name, status_str, esc_details });
             defer allocator.free(entry);
             try parts.appendSlice(allocator, entry);
         } else {
-            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ c.name, status_str });
+            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ esc_name, status_str });
             defer allocator.free(entry);
             try parts.appendSlice(allocator, entry);
         }
@@ -264,16 +271,20 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
     try parts.appendSlice(allocator, "],\"errors\":[");
     for (report.errors, 0..) |e, i| {
         if (i > 0) try parts.appendSlice(allocator, ",");
-        const entry = try std.fmt.allocPrint(allocator, "\"{s}\"", .{e});
-        defer allocator.free(entry);
-        try parts.appendSlice(allocator, entry);
+        const esc_e = try jsonEscape(allocator, e);
+        defer allocator.free(esc_e);
+        try parts.appendSlice(allocator, "\"");
+        try parts.appendSlice(allocator, esc_e);
+        try parts.appendSlice(allocator, "\"");
     }
     try parts.appendSlice(allocator, "],\"warnings\":[");
     for (report.warnings, 0..) |warn, i| {
         if (i > 0) try parts.appendSlice(allocator, ",");
-        const entry = try std.fmt.allocPrint(allocator, "\"{s}\"", .{warn});
-        defer allocator.free(entry);
-        try parts.appendSlice(allocator, entry);
+        const esc_w = try jsonEscape(allocator, warn);
+        defer allocator.free(esc_w);
+        try parts.appendSlice(allocator, "\"");
+        try parts.appendSlice(allocator, esc_w);
+        try parts.appendSlice(allocator, "\"");
     }
     try parts.appendSlice(allocator, "]}");
 
@@ -366,6 +377,29 @@ fn buildErrorResponseValue(allocator: std.mem.Allocator, id: ?i64, code: i64, me
     err_obj.put(allocator, "message", .{ .string = message }) catch unreachable;
     resp.put(allocator, "error", .{ .object = err_obj }) catch unreachable;
     return .{ .object = resp };
+}
+
+/// Escape a string for safe JSON embedding (handles \, ", control chars).
+/// Caller owns returned memory.
+fn jsonEscape(allocator: std.mem.Allocator, s: []const u8) ![]const u8 {
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    for (s) |c| {
+        switch (c) {
+            '\\' => try buf.appendSlice(allocator, "\\\\"),
+            '"' => try buf.appendSlice(allocator, "\\\""),
+            '\n' => try buf.appendSlice(allocator, "\\n"),
+            '\r' => try buf.appendSlice(allocator, "\\r"),
+            '\t' => try buf.appendSlice(allocator, "\\t"),
+            0x00...0x08, 0x0b, 0x0c, 0x0e...0x1f => {
+                const esc = try std.fmt.allocPrint(allocator, "\\u{x:0>4}", .{c});
+                defer allocator.free(esc);
+                try buf.appendSlice(allocator, esc);
+            },
+            else => try buf.append(allocator, c),
+        }
+    }
+    return buf.toOwnedSlice(allocator);
 }
 
 const ParamDef = struct {
