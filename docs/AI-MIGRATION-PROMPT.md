@@ -237,3 +237,13 @@ src/
 □ 阶段5: 响应格式与原系统一致? compat/ 有注释说明?
 □ 阶段6: zig build test 全通过? Harness 对比通过?
 ```
+
+## MCP 集成
+
+可通过 MCP Server 集成 zmodu，AI Agent 直接调用工具完成迁移全流程：
+
+```json
+{"mcpServers": {"zmodu": {"command": "zmodu", "args": ["mcp"]}}}
+```
+
+可用工具: `zmodu_scaffold`, `zmodu_module`, `zmodu_version`, `zmodu_verify`, `zmodu_diff`

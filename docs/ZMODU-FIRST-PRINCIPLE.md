@@ -60,8 +60,8 @@ Step 3: 编译验证
   预期: 0 errors
 
 Step 4: AI 补足业务逻辑
-  识别: zmodu 未生成的逻辑 (service_ext.zig, api_ext.zig)
-  原则: 只写 _ext 文件，不修改生成文件
+  AI 直接修改生成文件，添加自定义业务逻辑
+  重新生成时: zmodu 使用 SHA256 哈希追踪，检测 AI 修改并跳过已变更的文件
 
 Step 5: 再次验证
   zig build test
@@ -84,7 +84,7 @@ Step 3: 编译验证
 
 Step 4: AI 补足
   分析: 哪些表有关联查询需要自定义 JOIN
-  原则: 只扩展 service.zig 和 api.zig，通过 _ext 文件
+  原则: AI 直接修改生成文件，zmodu 使用哈希追踪保护已修改文件
 
 Step 5: 验证
   zig build test
@@ -113,27 +113,31 @@ Step 5: Harness 验证
   检查: Schema diff, API response diff, Performance baseline
 ```
 
-## AI 只能编辑的文件
+## 文件边界
 
 ```
-src/modules/<name>/service_ext.zig   # 自定义业务逻辑
-src/modules/<name>/api_ext.zig       # 自定义 API 端点
+AI 直接修改生成文件。当重新生成时，zmodu 使用 SHA256 哈希追踪检测 AI 修改并跳过已变更的文件。
+```
+
+### 生成的文件（AI 可直接修改，重新生成时受哈希保护）
+
+```
+src/modules/<name>/model.zig         # 表→struct
+src/modules/<name>/persistence.zig   # ORM repo
+src/modules/<name>/service.zig       # CRUD 方法
+src/modules/<name>/api.zig           # REST 路由+handler
+src/modules/<name>/module.zig        # 声明+生命周期
+src/modules/<name>/root.zig          # barrel 导出
+src/main.zig                         # DI 织入
+build.zig / build.zig.zon            # 构建配置
+```
+
+### AI 自主创建的文件
+
+```
 src/business/                         # 跨模块业务逻辑
 src/compat/                           # 兼容层 (迁移模式)
 tests/                                # 测试文件
-```
-
-## AI 绝对不能编辑的文件
-
-```
-src/modules/<name>/model.zig         # zmodu 生成，regenerate 时覆盖
-src/modules/<name>/persistence.zig   # zmodu 生成
-src/modules/<name>/service.zig       # zmodu 生成 (基础 CRUD)
-src/modules/<name>/api.zig           # zmodu 生成 (基础 REST)
-src/modules/<name>/module.zig        # zmodu 生成
-src/modules/<name>/root.zig          # zmodu 生成
-src/main.zig                         # zmodu 生成 (模块织入)
-build.zig / build.zig.zon            # zmodu 生成
 ```
 
 ## 验证体系
@@ -145,6 +149,35 @@ build.zig / build.zig.zon            # zmodu 生成
 2. 测试验证:   zig build test      (必须全通过)
 3. API 验证:   zmodu verify        (对比预期响应)
 4. Schema 验证: zmodu verify --schema  (对比原始 DDL)
+5. 增量更新:   zmodu diff old.sql new.sql  (SQL diff 分析)
+6. 目录验证:   zmodu verify [dir]  (验证项目完整性)
+```
+
+## MCP 集成
+
+`zmodu mcp` 启动 MCP Server，供 AI Agent 集成使用。
+
+### 可用工具
+
+| 工具 | 功能 |
+|------|------|
+| zmodu_scaffold | 从 SQL 生成项目骨架 |
+| zmodu_module | 添加新模块 |
+| zmodu_version | 获取 zmodu 版本信息 |
+| zmodu_verify | 验证项目完整性 |
+| zmodu_diff | SQL diff 分析 |
+
+### AI Agent 配置
+
+```json
+{
+  "mcpServers": {
+    "zmodu": {
+      "command": "zmodu",
+      "args": ["mcp"]
+    }
+  }
+}
 ```
 
 ## 效能指标
