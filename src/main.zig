@@ -491,8 +491,13 @@ fn cmdVerify(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
     const project_dir = if (args.len > 0) args[0] else ".";
     const report = try verify_mod.verifyProject(allocator, io, project_dir);
     defer {
+        // Free details for passing checks (failing check details are shared with errors)
+        for (report.checks) |c| {
+            if (c.status == .pass or c.status == .skip) {
+                if (c.details) |d| allocator.free(d);
+            }
+        }
         allocator.free(report.checks);
-        // details strings are owned by errors/warnings, don't double-free
         for (report.errors) |e| allocator.free(e);
         allocator.free(report.errors);
         for (report.warnings) |w| allocator.free(w);

@@ -249,10 +249,14 @@ fn checkCompile(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) !
         .argv = &.{ "zig", "build" },
         .cwd = .{ .path = project_dir },
     }) catch |err| {
+        const msg = if (err == error.FileNotFound)
+            "zig compiler not found in PATH"
+        else
+            try std.fmt.allocPrint(allocator, "failed to run zig build: {}", .{err});
         return CheckResult{
             .name = "compile",
             .status = .fail,
-            .details = try std.fmt.allocPrint(allocator, "failed to spawn zig build: {}", .{err}),
+            .details = msg,
         };
     };
     defer {

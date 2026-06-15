@@ -342,9 +342,42 @@ fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![
             .removed => "removed",
             .modified => "modified",
         };
-        const entry = try std.fmt.allocPrint(allocator, "{{\"table\":\"{s}\",\"change\":\"{s}\"}}", .{ d.table_name, change_str });
+        const esc_table = try jsonEscape(allocator, d.table_name);
+        defer allocator.free(esc_table);
+        const entry = try std.fmt.allocPrint(allocator, "{{\"table\":\"{s}\",\"change\":\"{s}\"", .{ esc_table, change_str });
         defer allocator.free(entry);
         try parts.appendSlice(allocator, entry);
+
+        // Include column changes for modified tables
+        if (d.column_changes.len > 0) {
+            try parts.appendSlice(allocator, ",\"column_changes\":[");
+            for (d.column_changes, 0..) |cc, ci| {
+                if (ci > 0) try parts.appendSlice(allocator, ",");
+                const cc_type = switch (cc.change_type) {
+                    .added => "added",
+                    .removed => "removed",
+                    .type_changed => "type_changed",
+                };
+                const esc_col = try jsonEscape(allocator, cc.column_name);
+                defer allocator.free(esc_col);
+                if (cc.old_type) |ot| {
+                    const esc_ot = try jsonEscape(allocator, ot);
+                    defer allocator.free(esc_ot);
+                    const esc_nt = try jsonEscape(allocator, cc.new_type orelse "");
+                    defer allocator.free(esc_nt);
+                    const cc_entry = try std.fmt.allocPrint(allocator, "{{\"column\":\"{s}\",\"change\":\"{s}\",\"old_type\":\"{s}\",\"new_type\":\"{s}\"}}", .{ esc_col, cc_type, esc_ot, esc_nt });
+                    defer allocator.free(cc_entry);
+                    try parts.appendSlice(allocator, cc_entry);
+                } else {
+                    const cc_entry = try std.fmt.allocPrint(allocator, "{{\"column\":\"{s}\",\"change\":\"{s}\"}}", .{ esc_col, cc_type });
+                    defer allocator.free(cc_entry);
+                    try parts.appendSlice(allocator, cc_entry);
+                }
+            }
+            try parts.appendSlice(allocator, "]");
+        }
+
+        try parts.appendSlice(allocator, "}");
     }
     try parts.appendSlice(allocator, "]}");
     return parts.toOwnedSlice(allocator);
