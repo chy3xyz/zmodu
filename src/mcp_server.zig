@@ -134,9 +134,9 @@ fn buildToolsCallResponse(io: Io, allocator: std.mem.Allocator, id: ?i64, params
     const result_text = if (std.mem.eql(u8, tool_name, "zmodu_version"))
         try callVersion(allocator)
     else if (std.mem.eql(u8, tool_name, "zmodu_scaffold"))
-        try callStub(allocator, "scaffold not yet wired")
+        try callScaffold(io, allocator, arguments)
     else if (std.mem.eql(u8, tool_name, "zmodu_module"))
-        try callStub(allocator, "module not yet wired")
+        try callModuleCmd(io, allocator, arguments)
     else if (std.mem.eql(u8, tool_name, "zmodu_verify"))
         try callVerify(io, allocator, arguments)
     else if (std.mem.eql(u8, tool_name, "zmodu_diff"))
@@ -172,6 +172,43 @@ fn callStub(allocator: std.mem.Allocator, message: []const u8) ![]const u8 {
     var obj: std.json.ObjectMap = .{};
     try obj.put(allocator, "error", .{ .string = message });
     return try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
+}
+
+fn callScaffold(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
+    if (arguments == null) return callStub(allocator, "Missing arguments");
+    const a = arguments.?.object;
+    const sql_path = a.get("sql_path") orelse return callStub(allocator, "Missing sql_path");
+    const output_dir = a.get("output_dir") orelse return callStub(allocator, "Missing output_dir");
+
+    // Build CLI args for cmdScaffold
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    try args.appendSlice(allocator, &.{ "--sql", sql_path.string, "--out", output_dir.string, "--name", "app" });
+    if (a.get("orm_backend")) |backend| {
+        if (std.mem.eql(u8, backend.string, "zent")) {
+            // Zent not supported via this path yet
+        }
+    }
+
+    main_mod.cmdScaffold(io, allocator, args.items) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"scaffold failed: {}\"}}", .{err});
+    };
+    return allocator.dupe(u8, "{\"success\":true,\"message\":\"Scaffold completed\"}");
+}
+
+fn callModuleCmd(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
+    if (arguments == null) return callStub(allocator, "Missing arguments");
+    const a = arguments.?.object;
+    const name = a.get("name") orelse return callStub(allocator, "Missing name");
+
+    var args = std.ArrayList([]const u8).empty;
+    defer args.deinit(allocator);
+    try args.append(allocator, name.string);
+
+    main_mod.cmdModule(io, allocator, args.items) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"module failed: {}\"}}", .{err});
+    };
+    return std.fmt.allocPrint(allocator, "{{\"success\":true,\"module\":\"{s}\"}}", .{name.string});
 }
 
 fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {

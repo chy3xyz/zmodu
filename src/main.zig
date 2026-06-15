@@ -771,7 +771,7 @@ fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !v
     std.log.info("  cd {s} && zig build run", .{project_name});
 }
 
-fn cmdModule(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn cmdModule(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     if (args.len < 1) {
         std.log.err("Usage: zmodu module <name> [--dry-run] [--force]", .{});
         return error.CliUsage;
@@ -3979,7 +3979,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     };
 }
 
-fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+pub fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
     const sopts = try parseScaffoldArgs(allocator, args);
 
     // 1. Get table definitions — either from SQL file or live database
