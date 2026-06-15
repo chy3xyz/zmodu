@@ -3883,6 +3883,7 @@ const ScaffoldOpts = struct {
     db_dsn: ?[]const u8 = null,
     force: bool,
     dry_run: bool,
+    diff_old_sql: ?[]const u8 = null,
     with_events: bool = false,
     with_resilience: bool = false,
     with_cluster: bool = false,
@@ -3905,6 +3906,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
     var out_dir: []const u8 = ".";
     var force: bool = false;
     var dry_run: bool = false;
+    var diff_old_sql: ?[]const u8 = null;
 
     var with_events: bool = false;
     var with_resilience: bool = false;
@@ -3944,6 +3946,10 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
             force = true;
         } else if (std.mem.eql(u8, args[i], "--dry-run")) {
             dry_run = true;
+        } else if (std.mem.eql(u8, args[i], "--diff")) {
+            if (i + 1 >= args.len) return error.CliUsage;
+            diff_old_sql = args[i + 1];
+            i += 1;
         } else if (std.mem.eql(u8, args[i], "--with-events")) {
             with_events = true;
         } else if (std.mem.eql(u8, args[i], "--with-resilience")) {
@@ -3993,6 +3999,7 @@ fn parseScaffoldArgs(allocator: std.mem.Allocator, args: []const []const u8) !Sc
         .db_dsn = db_dsn,
         .force = force,
         .dry_run = dry_run,
+        .diff_old_sql = diff_old_sql,
         .with_events = with_events,
         .with_resilience = with_resilience,
         .with_cluster = with_cluster,
@@ -4043,6 +4050,46 @@ pub fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []con
         std.log.info("Scaffolding '{s}' from {d} tables in {s}", .{ sopts.project_name, tables.len, sql_path });
     } else {
         return error.CliUsage;
+    }
+
+    // --diff mode: compare with old SQL and report changes
+    if (sopts.diff_old_sql) |old_sql_path| {
+        const old_sql_content = std.Io.Dir.cwd().readFileAlloc(io, old_sql_path, allocator, std.Io.Limit.limited(100 * 1024 * 1024)) catch |err| {
+            std.log.err("Cannot read old SQL file '{s}': {s}", .{ old_sql_path, @errorName(err) });
+            return err;
+        };
+        defer allocator.free(old_sql_content);
+        const old_sql_for_parse = stripUtf8BomAndTrimSql(old_sql_content);
+
+        const old_tables = parseSqlSchema(allocator, old_sql_for_parse) catch |err| {
+            std.log.err("Failed to parse old SQL: {s}", .{@errorName(err)});
+            return err;
+        };
+        defer freeTableDefs(allocator, old_tables);
+
+        const table_diffs = sql_diff.diffTables(allocator, old_tables, tables) catch {
+            std.log.warn("Diff failed, proceeding with full scaffold", .{});
+            return;
+        };
+        defer {
+            for (table_diffs) |d| if (d.column_changes.len > 0) allocator.free(d.column_changes);
+            allocator.free(table_diffs);
+        }
+
+        std.log.info("--diff: {d} tables changed", .{table_diffs.len});
+        for (table_diffs) |d| {
+            const change_str = switch (d.change_type) {
+                .added => "added",
+                .removed => "removed",
+                .modified => "modified",
+            };
+            if (d.change_type == .modified and d.column_changes.len > 0) {
+                std.log.info("  {s} {s} ({d} column changes)", .{ change_str, d.table_name, d.column_changes.len });
+            } else {
+                std.log.info("  {s} {s}", .{ change_str, d.table_name });
+            }
+        }
+        std.log.info("Note: hash tracking will protect AI-modified files from overwrites", .{});
     }
     defer {
         for (tables) |t| {

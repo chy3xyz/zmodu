@@ -102,6 +102,7 @@ fn buildToolsList(allocator: std.mem.Allocator, id: ?i64) !std.json.Value {
     try tools.append(try makeToolSchema(allocator, "zmodu_scaffold", "Generate a full ZigModu project from SQL DDL", &.{
         .{ .name = "sql_path", .type = "string", .desc = "Path to SQL file" },
         .{ .name = "output_dir", .type = "string", .desc = "Output directory" },
+        .{ .name = "diff_old_sql", .type = "string", .desc = "Path to old SQL file for diff (incremental)", .opt = true },
         .{ .name = "orm_backend", .type = "string", .desc = "ORM backend: sqlx (default) or zent", .opt = true },
     }));
     try tools.append(try makeToolSchema(allocator, "zmodu_module", "Generate a single module skeleton", &.{
@@ -185,6 +186,9 @@ fn callScaffold(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value
     var args = std.ArrayList([]const u8).empty;
     defer args.deinit(allocator);
     try args.appendSlice(allocator, &.{ "--sql", sql_path.string, "--out", output_dir.string, "--name", "app" });
+    if (a.get("diff_old_sql")) |diff_old| {
+        try args.appendSlice(allocator, &.{ "--diff", diff_old.string });
+    }
     if (a.get("orm_backend")) |backend| {
         if (std.mem.eql(u8, backend.string, "zent")) {
             // Zent not supported via this path yet
