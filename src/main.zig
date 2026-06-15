@@ -2425,7 +2425,10 @@ fn extractForeignKeys(allocator: std.mem.Allocator, sql: []const u8, body_start:
                     const ref_start = j;
                     while (j < rest.len and (std.ascii.isAlphanumeric(rest[j]) or rest[j] == '_' or rest[j] == '`')) j += 1;
                     const ref_table = std.mem.trim(u8, rest[ref_start..j], "`");
-                    if (ref_table.len == 0) break;
+                    if (ref_table.len == 0) {
+                        allocator.free(col_name);
+                        break;
+                    }
 
                     // Skip ref column in parens if present
                     var ref_column: []const u8 = "id";

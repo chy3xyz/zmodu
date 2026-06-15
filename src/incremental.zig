@@ -58,7 +58,14 @@ pub fn saveManifest(allocator: std.mem.Allocator, io: Io, project_dir: []const u
     try buf.appendSlice(allocator, "\",\n  \"files\": {\n");
     for (entries, 0..) |entry, i| {
         try buf.appendSlice(allocator, "    \"");
-        try buf.appendSlice(allocator, entry.path);
+        // Escape path for JSON safety
+        for (entry.path) |c| {
+            switch (c) {
+                '\\' => try buf.appendSlice(allocator, "\\\\"),
+                '"' => try buf.appendSlice(allocator, "\\\""),
+                else => try buf.append(allocator, c),
+            }
+        }
         try buf.appendSlice(allocator, "\": \"");
         try buf.appendSlice(allocator, &entry.hash);
         try buf.appendSlice(allocator, "\"");
