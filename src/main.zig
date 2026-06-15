@@ -1399,7 +1399,7 @@ fn writeFileGen(io: std.Io, path: []const u8, content: []const u8, opts: GenOpti
 
 // ==================== ORM Code Generation ====================
 
-const ColumnType = enum {
+pub const ColumnType = enum {
     int,
     string,
     bool,
@@ -1408,7 +1408,7 @@ const ColumnType = enum {
     unknown,
 };
 
-const ColumnDef = struct {
+pub const ColumnDef = struct {
     name: []const u8,
     col_type: ColumnType,
     nullable: bool,
@@ -1418,13 +1418,13 @@ const ColumnDef = struct {
     comment: ?[]const u8,
 };
 
-const ForeignKey = struct {
+pub const ForeignKey = struct {
     column_name: []const u8,
     ref_table: []const u8,
     ref_column: []const u8,
 };
 
-const TableDef = struct {
+pub const TableDef = struct {
     name: []const u8,
     columns: []ColumnDef,
     foreign_keys: []ForeignKey,
@@ -1692,7 +1692,7 @@ fn markPrimaryKeyColumns(allocator: std.mem.Allocator, sql: []const u8, body_sta
     }
 }
 
-fn parseSqlSchema(allocator: std.mem.Allocator, sql: []const u8) ![]TableDef {
+pub fn parseSqlSchema(allocator: std.mem.Allocator, sql: []const u8) ![]TableDef {
     var tables: std.ArrayList(TableDef) = std.ArrayList(TableDef).empty;
     defer tables.deinit(allocator);
     var i: usize = 0;
