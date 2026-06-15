@@ -223,6 +223,9 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
         return std.fmt.allocPrint(allocator, "{{\"error\":\"verify failed: {}\"}}", .{err});
     };
     defer {
+        for (report.checks) |c| {
+            if (c.details) |d| allocator.free(d);
+        }
         allocator.free(report.checks);
         for (report.errors) |e| allocator.free(e);
         allocator.free(report.errors);
@@ -231,10 +234,50 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
         allocator.free(report.summary);
     }
 
-    if (report.pass) {
-        return std.fmt.allocPrint(allocator, "{{\"pass\":true,\"summary\":\"{s}\"}}", .{report.summary});
+    // Build detailed JSON output
+    var parts = std.ArrayList(u8).empty;
+    defer parts.deinit(allocator);
+
+    try parts.appendSlice(allocator, "{\"pass\":");
+    try parts.appendSlice(allocator, if (report.pass) "true" else "false");
+    try parts.appendSlice(allocator, ",\"summary\":\"");
+    try parts.appendSlice(allocator, report.summary);
+    try parts.appendSlice(allocator, "\",\"checks\":[");
+    for (report.checks, 0..) |c, i| {
+        if (i > 0) try parts.appendSlice(allocator, ",");
+        const status_str = switch (c.status) {
+            .pass => "pass",
+            .fail => "fail",
+            .warn => "warn",
+            .skip => "skip",
+        };
+        if (c.details) |d| {
+            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\",\"details\":\"{s}\"}}", .{ c.name, status_str, d });
+            defer allocator.free(entry);
+            try parts.appendSlice(allocator, entry);
+        } else {
+            const entry = try std.fmt.allocPrint(allocator, "{{\"name\":\"{s}\",\"status\":\"{s}\"}}", .{ c.name, status_str });
+            defer allocator.free(entry);
+            try parts.appendSlice(allocator, entry);
+        }
     }
-    return std.fmt.allocPrint(allocator, "{{\"pass\":false,\"summary\":\"{s}\"}}", .{report.summary});
+    try parts.appendSlice(allocator, "],\"errors\":[");
+    for (report.errors, 0..) |e, i| {
+        if (i > 0) try parts.appendSlice(allocator, ",");
+        const entry = try std.fmt.allocPrint(allocator, "\"{s}\"", .{e});
+        defer allocator.free(entry);
+        try parts.appendSlice(allocator, entry);
+    }
+    try parts.appendSlice(allocator, "],\"warnings\":[");
+    for (report.warnings, 0..) |warn, i| {
+        if (i > 0) try parts.appendSlice(allocator, ",");
+        const entry = try std.fmt.allocPrint(allocator, "\"{s}\"", .{warn});
+        defer allocator.free(entry);
+        try parts.appendSlice(allocator, entry);
+    }
+    try parts.appendSlice(allocator, "]}");
+
+    return parts.toOwnedSlice(allocator);
 }
 
 fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
