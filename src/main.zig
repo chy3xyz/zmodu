@@ -1,6 +1,7 @@
 // ZModu - Code generation tool for ZigModu
 const std = @import("std");
 const orm_tpl = @import("orm_tpl.zig");
+const mcp_server = @import("mcp_server.zig");
 
 const Command = enum {
     new,
@@ -18,6 +19,7 @@ const Command = enum {
     plugin,
     life,
     upgrade,
+    mcp,
     help,
     version,
 };
@@ -211,6 +213,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .plugin => try cmdPlugin(io, allocator, cmd_args),
         .life => try cmdLife(io, allocator, cmd_args),
         .upgrade => try cmdUpgrade(io, allocator, cmd_args),
+        .mcp => try cmdMcp(io, allocator),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -318,6 +321,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "plugin")) return .plugin;
     if (std.mem.eql(u8, cmd, "life")) return .life;
     if (std.mem.eql(u8, cmd, "upgrade")) return .upgrade;
+    if (std.mem.eql(u8, cmd, "mcp")) return .mcp;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -348,6 +352,7 @@ fn printUsage() void {
         \\  plugin         List/manage stub plugins (migration gap filler)
         \\  life           Project evolutionary memory (tree, fingerprint, evolve)
         \\  upgrade        Upgrade zmodu to latest (git pull + zig build)
+        \\  mcp            Start MCP server (for AI agent integration)
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -464,6 +469,10 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
     const bin = try std.fmt.allocPrint(allocator, "{s}/zig-out/bin/zmodu", .{src_dir.?});
     defer allocator.free(bin);
     std.log.info("zmodu upgraded. Install: cp {s} ~/.local/bin/zmodu", .{bin});
+}
+
+fn cmdMcp(io: std.Io, allocator: std.mem.Allocator) !void {
+    try mcp_server.start(io, allocator);
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {

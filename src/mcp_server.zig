@@ -1,36 +1,52 @@
 // MCP Server — JSON-RPC 2.0 over stdio for Model Context Protocol
 const std = @import("std");
+const Io = std.Io;
 const mcp_types = @import("mcp_types.zig");
-const builtin = @import("builtin");
 
 /// Start the MCP server loop on stdin/stdout.
 /// Blocks until stdin is closed.
-pub fn start(allocator: std.mem.Allocator) !void {
-    const stdin = std.io.getStdIn().reader();
-    const stdout = std.io.getStdOut().writer();
-    var buf: [65536]u8 = undefined;
+pub fn start(io: Io, allocator: std.mem.Allocator) !void {
+    var stdin_buf: [65536]u8 = undefined;
+    var stdin_file = Io.File.stdin();
+    var stdin_reader = stdin_file.reader(io, &stdin_buf);
+
+    var stdout_buf: [65536]u8 = undefined;
+    var stdout_file = Io.File.stdout();
+    var stdout_writer = stdout_file.writer(io, &stdout_buf);
+    const stdout = &stdout_writer.interface;
+
+    var line_buf: [65536]u8 = undefined;
 
     while (true) {
-        const line = stdin.readUntilDelimiter(&buf, '\n') catch |err| {
+        var line_dest = Io.Writer.fixed(&line_buf);
+        const n = stdin_reader.interface.streamDelimiter(&line_dest, '\n') catch |err| {
             if (err == error.EndOfStream) break;
             return err;
         };
-        if (line.len == 0) continue;
+        _ = stdin_reader.interface.takeByte() catch {};
+
+        if (n == 0) continue;
+        const line = line_buf[0..n];
 
         const response = handleMessage(allocator, line) catch |err| {
             const resp = try mcp_types.errorResponse(allocator, null, -32603, @errorName(err));
             defer allocator.free(resp);
-            try stdout.print("{s}\n", .{resp});
+            try stdout.writeAll(resp);
+            try stdout.writeAll("\n");
+            try stdout.flush();
             continue;
         };
         defer allocator.free(response);
-        if (response.len == 0) continue; // notification — no response
-        try stdout.print("{s}\n", .{response});
+        if (response.len == 0) continue;
+        try stdout.writeAll(response);
+        try stdout.writeAll("\n");
+        try stdout.flush();
     }
 }
 
 /// Parse a JSON-RPC request line and dispatch to the appropriate handler.
-fn handleMessage(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
+/// Returns an owned string (caller must free with allocator).
+pub fn handleMessage(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return mcp_types.errorResponse(allocator, null, -32700, "Parse error");
     };
@@ -45,38 +61,40 @@ fn handleMessage(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
         else => null,
     } else null;
 
-    if (std.mem.eql(u8, method_str, "initialize")) {
-        return handleInitialize(allocator, id);
-    } else if (std.mem.eql(u8, method_str, "tools/list")) {
-        return handleToolsList(allocator, id);
-    } else if (std.mem.eql(u8, method_str, "tools/call")) {
-        const params = root.get("params");
-        return handleToolsCall(allocator, id, params);
-    } else if (std.mem.eql(u8, method_str, "notifications/initialized")) {
-        if (id == null) return allocator.dupe(u8, "");
+    // Use arena for building JSON response, then copy result to caller's allocator
+    var arena = std.heap.ArenaAllocator.init(allocator);
+    defer arena.deinit();
+    const aa = arena.allocator();
+
+    const response_value: std.json.Value = if (std.mem.eql(u8, method_str, "initialize"))
+        try buildInitialize(aa, id)
+    else if (std.mem.eql(u8, method_str, "tools/list"))
+        try buildToolsList(aa, id)
+    else if (std.mem.eql(u8, method_str, "tools/call"))
+        try buildToolsCallResponse(aa, id, root.get("params"))
+    else if (std.mem.eql(u8, method_str, "notifications/initialized"))
+        return if (id == null) allocator.dupe(u8, "") else mcp_types.errorResponse(allocator, id, -32601, "Method not found")
+    else
         return mcp_types.errorResponse(allocator, id, -32601, "Method not found");
-    } else {
-        return mcp_types.errorResponse(allocator, id, -32601, "Method not found");
-    }
+
+    // Serialize under arena, then copy to caller's allocator
+    const json_str = try std.json.Stringify.valueAlloc(aa, response_value, .{});
+    return try allocator.dupe(u8, json_str);
 }
 
-fn handleInitialize(allocator: std.mem.Allocator, id: ?i64) ![]const u8 {
-    // Build capabilities response using ObjectMap
-    var result = std.json.ObjectMap{};
-    try result.put("protocolVersion", .{ .string = "2024-11-05" });
-    var caps = std.json.ObjectMap{};
-    try caps.put("tools", .{ .object = std.json.ObjectMap{} });
-    try result.put("capabilities", .{ .object = caps });
-    var server_info = std.json.ObjectMap{};
-    try server_info.put("name", .{ .string = "zmodu" });
-    try server_info.put("version", .{ .string = "0.14.9" });
-    try result.put("serverInfo", .{ .object = server_info });
-
-    return try buildResponse(allocator, id, .{ .object = result });
+fn buildInitialize(allocator: std.mem.Allocator, id: ?i64) !std.json.Value {
+    var result: std.json.ObjectMap = .{};
+    try result.put(allocator, "protocolVersion", .{ .string = "2024-11-05" });
+    try result.put(allocator, "capabilities", .{ .object = .{} });
+    var server_info: std.json.ObjectMap = .{};
+    try server_info.put(allocator, "name", .{ .string = "zmodu" });
+    try server_info.put(allocator, "version", .{ .string = "0.14.9" });
+    try result.put(allocator, "serverInfo", .{ .object = server_info });
+    return buildResponseValue(allocator, id, .{ .object = result });
 }
 
-fn handleToolsList(allocator: std.mem.Allocator, id: ?i64) ![]const u8 {
-    var tools = std.json.Array{};
+fn buildToolsList(allocator: std.mem.Allocator, id: ?i64) !std.json.Value {
+    var tools = std.json.Array.init(allocator);
 
     try tools.append(try makeToolSchema(allocator, "zmodu_scaffold", "Generate a full ZigModu project from SQL DDL", &.{
         .{ .name = "sql_path", .type = "string", .desc = "Path to SQL file" },
@@ -96,15 +114,17 @@ fn handleToolsList(allocator: std.mem.Allocator, id: ?i64) ![]const u8 {
         .{ .name = "new_sql", .type = "string", .desc = "Path to the new SQL file" },
     }));
 
-    var result = std.json.ObjectMap{};
-    try result.put("tools", .{ .array = tools });
-    return try buildResponse(allocator, id, .{ .object = result });
+    var result: std.json.ObjectMap = .{};
+    try result.put(allocator, "tools", .{ .array = tools });
+    return buildResponseValue(allocator, id, .{ .object = result });
 }
 
-fn handleToolsCall(allocator: std.mem.Allocator, id: ?i64, params: ?std.json.Value) ![]const u8 {
-    if (params == null) return mcp_types.errorResponse(allocator, id, -32602, "Missing params");
+fn buildToolsCallResponse(allocator: std.mem.Allocator, id: ?i64, params: ?std.json.Value) !std.json.Value {
+    if (params == null) {
+        return buildErrorResponseValue(allocator, id, -32602, "Missing params");
+    }
     const p = params.?.object;
-    const tool_name_val = p.get("name") orelse return mcp_types.errorResponse(allocator, id, -32602, "Missing tool name");
+    const tool_name_val = p.get("name") orelse return buildErrorResponseValue(allocator, id, -32602, "Missing tool name");
     const tool_name = tool_name_val.string;
 
     const result_text = if (std.mem.eql(u8, tool_name, "zmodu_version"))
@@ -118,50 +138,65 @@ fn handleToolsCall(allocator: std.mem.Allocator, id: ?i64, params: ?std.json.Val
     else if (std.mem.eql(u8, tool_name, "zmodu_diff"))
         try callStub(allocator, "diff not yet wired")
     else
-        return mcp_types.errorResponse(allocator, id, -32602, "Unknown tool");
+        return buildErrorResponseValue(allocator, id, -32602, "Unknown tool");
 
     // Build MCP tool result: {content: [{type: "text", text: "..."}], isError: false}
-    var content_item = std.json.ObjectMap{};
-    try content_item.put("type", .{ .string = "text" });
-    try content_item.put("text", .{ .string = result_text });
+    var content_item: std.json.ObjectMap = .{};
+    try content_item.put(allocator, "type", .{ .string = "text" });
+    try content_item.put(allocator, "text", .{ .string = result_text });
 
-    var content_arr = std.json.Array{};
+    var content_arr = std.json.Array.init(allocator);
     try content_arr.append(.{ .object = content_item });
 
-    var result = std.json.ObjectMap{};
-    try result.put("content", .{ .array = content_arr });
-    try result.put("isError", .{ .bool = false });
+    var result: std.json.ObjectMap = .{};
+    try result.put(allocator, "content", .{ .array = content_arr });
+    try result.put(allocator, "isError", .{ .bool = false });
 
-    return try buildResponse(allocator, id, .{ .object = result });
+    return buildResponseValue(allocator, id, .{ .object = result });
 }
 
-// ── Tool implementations ──
+// ── Tool implementations (stubs) ──
 
 fn callVersion(allocator: std.mem.Allocator) ![]const u8 {
-    var obj = std.json.ObjectMap{};
-    try obj.put("version", .{ .string = "0.14.9" });
-    try obj.put("zig_version", .{ .string = "0.17.0" });
-    return try std.json.Stringify.valueAlloc(allocator, .{ .object = obj }, .{});
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "version", .{ .string = "0.14.9" });
+    try obj.put(allocator, "zig_version", .{ .string = "0.17.0" });
+    return try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
 }
 
 fn callStub(allocator: std.mem.Allocator, message: []const u8) ![]const u8 {
-    var obj = std.json.ObjectMap{};
-    try obj.put("error", .{ .string = message });
-    return try std.json.Stringify.valueAlloc(allocator, .{ .object = obj }, .{});
+    var obj: std.json.ObjectMap = .{};
+    try obj.put(allocator, "error", .{ .string = message });
+    return try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
 }
 
 // ── Helpers ──
 
-fn buildResponse(allocator: std.mem.Allocator, id: ?i64, result: std.json.Value) ![]const u8 {
-    var resp = std.json.ObjectMap{};
-    try resp.put("jsonrpc", .{ .string = "2.0" });
+fn buildResponseValue(allocator: std.mem.Allocator, id: ?i64, result: std.json.Value) std.json.Value {
+    var resp: std.json.ObjectMap = .{};
+    resp.put(allocator, "jsonrpc", .{ .string = "2.0" }) catch unreachable;
     if (id) |i| {
-        try resp.put("id", .{ .integer = i });
+        resp.put(allocator, "id", .{ .integer = i }) catch unreachable;
     } else {
-        try resp.put("id", .null);
+        resp.put(allocator, "id", .null) catch unreachable;
     }
-    try resp.put("result", result);
-    return try std.json.Stringify.valueAlloc(allocator, .{ .object = resp }, .{});
+    resp.put(allocator, "result", result) catch unreachable;
+    return .{ .object = resp };
+}
+
+fn buildErrorResponseValue(allocator: std.mem.Allocator, id: ?i64, code: i64, message: []const u8) std.json.Value {
+    var resp: std.json.ObjectMap = .{};
+    resp.put(allocator, "jsonrpc", .{ .string = "2.0" }) catch unreachable;
+    if (id) |i| {
+        resp.put(allocator, "id", .{ .integer = i }) catch unreachable;
+    } else {
+        resp.put(allocator, "id", .null) catch unreachable;
+    }
+    var err_obj: std.json.ObjectMap = .{};
+    err_obj.put(allocator, "code", .{ .integer = code }) catch unreachable;
+    err_obj.put(allocator, "message", .{ .string = message }) catch unreachable;
+    resp.put(allocator, "error", .{ .object = err_obj }) catch unreachable;
+    return .{ .object = resp };
 }
 
 const ParamDef = struct {
@@ -172,32 +207,31 @@ const ParamDef = struct {
 };
 
 fn makeToolSchema(allocator: std.mem.Allocator, name: []const u8, description: []const u8, params: []const ParamDef) !std.json.Value {
-    _ = allocator;
-    var properties = std.json.ObjectMap{};
-    var required_arr = std.json.Array{};
+    var properties: std.json.ObjectMap = .{};
+    var required_arr = std.json.Array.init(allocator);
 
     for (params) |p| {
-        var prop = std.json.ObjectMap{};
-        try prop.put("type", .{ .string = p.type });
-        try prop.put("description", .{ .string = p.desc });
-        try properties.put(p.name, .{ .object = prop });
+        var prop: std.json.ObjectMap = .{};
+        try prop.put(allocator, "type", .{ .string = p.type });
+        try prop.put(allocator, "description", .{ .string = p.desc });
+        try properties.put(allocator, p.name, .{ .object = prop });
         if (!p.opt) {
             try required_arr.append(.{ .string = p.name });
         }
     }
 
-    var schema = std.json.ObjectMap{};
-    try schema.put("type", .{ .string = "object" });
-    try schema.put("properties", .{ .object = properties });
+    var schema: std.json.ObjectMap = .{};
+    try schema.put(allocator, "type", .{ .string = "object" });
+    try schema.put(allocator, "properties", .{ .object = properties });
     if (required_arr.items.len > 0) {
-        try schema.put("required", .{ .array = required_arr });
+        try schema.put(allocator, "required", .{ .array = required_arr });
     }
 
-    var tool = std.json.ObjectMap{};
-    try tool.put("name", .{ .string = name });
-    try tool.put("description", .{ .string = description });
-    try tool.put("inputSchema", .{ .object = schema });
-    return .{ .object = tool };
+    var tool: std.json.ObjectMap = .{};
+    try tool.put(allocator, "name", .{ .string = name });
+    try tool.put(allocator, "description", .{ .string = description });
+    try tool.put(allocator, "inputSchema", .{ .object = schema });
+    return std.json.Value{ .object = tool };
 }
 
 // ── Tests ──
