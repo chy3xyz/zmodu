@@ -1,6 +1,6 @@
-# zmodu v0.14.2
+# zmodu v0.14.9
 
-Code generation CLI for [zigmodu](https://github.com/chy3xyz/zigmodu). Modulith architecture scaffolding with AI-assisted development. Zig 0.17+.
+Code generation CLI for [zigmodu](https://github.com/chy3xyz/zigmodu). Modulith architecture scaffolding with AI-assisted development via MCP protocol. Zig 0.17+.
 
 ## Install
 
@@ -24,9 +24,29 @@ zmodu orm --sql <file> [--out <dir>]      # ORM modules only
 zmodu module <name>                        # empty module skeleton
 zmodu api <name>                           # standalone API template
 zmodu event <name>                         # event handler template
+zmodu verify [dir]                         # verify project compiles + structure
+zmodu diff <old.sql> <new.sql>             # compare SQL schemas (table-level)
+zmodu mcp                                  # start MCP server (AI agent integration)
 zmodu plugin stub --name <n>              # dependency stub for migration
 zmodu life                                 # project evolutionary memory
 ```
+
+## MCP Integration
+
+AI agents (Kimi, Claude, etc.) can call zmodu directly via MCP protocol:
+
+```json
+{
+  "mcpServers": {
+    "zmodu": {
+      "command": "zmodu",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Available tools: `zmodu_scaffold`, `zmodu_module`, `zmodu_version`, `zmodu_verify`, `zmodu_diff`.
 
 ## Scaffold Flags
 

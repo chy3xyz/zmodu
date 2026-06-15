@@ -24,14 +24,14 @@ pub fn sha256Hex(content: []const u8) [64]u8 {
 
 /// Check if a file matches its stored hash in the manifest.
 /// Returns true if unchanged (hash matches), false if modified or not in manifest.
-pub fn isUnchanged(io: Io, project_dir: []const u8, relative_path: []const u8, manifest_files: *const std.StringHashMap([64]u8)) bool {
+pub fn isUnchanged(allocator: std.mem.Allocator, io: Io, project_dir: []const u8, relative_path: []const u8, manifest_files: *const std.StringHashMap([64]u8)) bool {
     const stored_hash = manifest_files.get(relative_path) orelse return false;
 
     var full_path_buf: [std.fs.max_path_bytes]u8 = undefined;
     const full_path = std.fmt.bufPrint(&full_path_buf, "{s}/{s}", .{ project_dir, relative_path }) catch return false;
 
-    const content = Io.Dir.cwd().readFileAlloc(io, full_path, std.heap.page_allocator, Io.Limit.limited(10 * 1024 * 1024)) catch return false;
-    defer std.heap.page_allocator.free(content);
+    const content = Io.Dir.cwd().readFileAlloc(io, full_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch return false;
+    defer allocator.free(content);
 
     const current_hash = sha256Hex(content);
     return std.mem.eql(u8, &stored_hash, &current_hash);

@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-# zmodu v0.13.0 — ZigModu Code Generator
+# zmodu v0.14.9 — ZigModu Code Generator
 
-CLI that generates complete ZigModu projects from SQL schemas. **zmodu generates everything; AI edits generated files directly** (@initialized model, not ext/).
+CLI that generates complete ZigModu projects from SQL schemas. **zmodu generates everything; AI edits generated files directly** (@initialized model, not ext/). Includes MCP server for AI agent integration.
 
 ## Build & Test
 
@@ -17,8 +17,13 @@ zig build test               # test suite (all tests in src/main.zig)
 ## Architecture
 
 ```
-src/main.zig              # ~7300 lines: SQL parser, CLI (19 commands), 10+ code generators
+src/main.zig              # ~7700 lines: SQL parser, CLI (22 commands), 10+ code generators
 src/orm_tpl.zig           # template embedFile references
+src/mcp_types.zig         # JSON-RPC 2.0 protocol types for MCP
+src/mcp_server.zig        # MCP server: 5 tools (scaffold/module/version/verify/diff)
+src/verify.zig            # project verification (compile, module integrity, imports)
+src/sql_diff.zig          # SQL table-level diff engine (column changes, nullable, default)
+src/incremental.zig       # SHA256 hash tracking for incremental generation
 src/templates/
   orm/sqlx/               # model/persistence/service/api/module templates (SQLx backend)
   orm/zent/               # Zent backend templates (client/schema)
