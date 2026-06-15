@@ -5,6 +5,7 @@ const orm_tpl = @import("orm_tpl.zig");
 const mcp_server = @import("mcp_server.zig");
 const verify_mod = @import("verify.zig");
 const sql_diff = @import("sql_diff.zig");
+const incremental = @import("incremental.zig");
 
 const Command = enum {
     new,
@@ -4640,10 +4641,77 @@ pub fn cmdScaffold(io: std.Io, allocator: std.mem.Allocator, args: []const []con
 
     if (!sopts.dry_run) {
         try finalizeBuildZigZonFingerprint(io, allocator, sopts.project_name, zon_path);
+
+        // Save SHA256 hashes of all generated files for incremental support
+        saveGeneratedHashes(io, allocator, project_dir) catch |err| {
+            std.log.warn("Could not save generated hashes: {}", .{err});
+        };
     }
 
     std.log.info("Scaffold complete: {d} tables → {d} modules in '{s}'", .{ tables.len, module_names.items.len, project_dir });
     std.log.info("  cd {s} && zig build run", .{project_dir});
+}
+
+/// Walk project directory and save SHA256 hashes of all .zig files.
+fn saveGeneratedHashes(io: std.Io, allocator: std.mem.Allocator, project_dir: []const u8) !void {
+    var entries = std.ArrayList(incremental.HashEntry).empty;
+    defer entries.deinit(allocator);
+
+    // Walk src/ directory for .zig files
+    var src_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const src_path = std.fmt.bufPrint(&src_buf, "{s}/src", .{project_dir}) catch return;
+    try walkAndHash(io, allocator, src_path, project_dir, &entries);
+
+    // Walk build.zig, build.zig.zon, main.zig at root
+    const root_files = [_][]const u8{ "build.zig", "build.zig.zon" };
+    for (root_files) |f| {
+        var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ project_dir, f }) catch continue;
+        const content = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
+        defer allocator.free(content);
+        const hash = incremental.sha256Hex(content);
+        try entries.append(allocator, .{ .path = try allocator.dupe(u8, f), .hash = hash });
+    }
+
+    if (entries.items.len > 0) {
+        incremental.saveManifest(allocator, io, project_dir, entries.items, "0.14.9") catch |err| {
+            std.log.warn("Failed to save hash manifest: {}", .{err});
+        };
+    }
+
+    // Free path strings
+    for (entries.items) |e| allocator.free(e.path);
+}
+
+fn walkAndHash(io: std.Io, allocator: std.mem.Allocator, current_path: []const u8, project_dir: []const u8, entries: *std.ArrayList(incremental.HashEntry)) !void {
+    var dir = Io.Dir.cwd().openDir(io, current_path, .{ .iterate = true }) catch return;
+    defer dir.close(io);
+
+    var iter = dir.iterate();
+    while (try iter.next(io)) |entry| {
+        var full_buf: [std.fs.max_path_bytes]u8 = undefined;
+        const full = std.fmt.bufPrint(&full_buf, "{s}/{s}", .{ current_path, entry.name }) catch continue;
+
+        if (entry.kind == .directory) {
+            if (entry.name[0] == '.') continue;
+            try walkAndHash(io, allocator, full, project_dir, entries);
+            continue;
+        }
+
+        if (!std.mem.endsWith(u8, entry.name, ".zig")) continue;
+
+        const content = Io.Dir.cwd().readFileAlloc(io, full, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch continue;
+        defer allocator.free(content);
+        const hash = incremental.sha256Hex(content);
+
+        // Compute relative path from project_dir
+        const rel_path = if (std.mem.startsWith(u8, full, project_dir))
+            full[project_dir.len + 1 ..]
+        else
+            full;
+
+        try entries.append(allocator, .{ .path = try allocator.dupe(u8, rel_path), .hash = hash });
+    }
 }
 
 fn generateAiChatModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []const u8, gen_opts: GenOptions) !void {

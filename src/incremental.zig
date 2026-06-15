@@ -4,12 +4,21 @@ const Io = std.Io;
 
 pub const HASH_FILE_NAME = ".zmodu/generated_hashes.json";
 
+pub const HashEntry = struct {
+    path: []const u8,
+    hash: [64]u8,
+};
+
 /// Compute SHA256 hex digest of content.
 pub fn sha256Hex(content: []const u8) [64]u8 {
     var hash: [32]u8 = undefined;
     std.crypto.hash.sha2.Sha256.hash(content, &hash, .{});
     var hex: [64]u8 = undefined;
-    _ = std.fmt.bufPrint(&hex, "{}", .{std.fmt.fmtSliceHexLower(&hash)}) catch unreachable;
+    const hex_chars = "0123456789abcdef";
+    for (hash, 0..) |byte, i| {
+        hex[i * 2] = hex_chars[byte >> 4];
+        hex[i * 2 + 1] = hex_chars[byte & 0x0f];
+    }
     return hex;
 }
 
@@ -26,6 +35,41 @@ pub fn isUnchanged(io: Io, project_dir: []const u8, relative_path: []const u8, m
 
     const current_hash = sha256Hex(content);
     return std.mem.eql(u8, &stored_hash, &current_hash);
+}
+
+/// Save a hash manifest to the project's .zmodu/generated_hashes.json.
+pub fn saveManifest(allocator: std.mem.Allocator, io: Io, project_dir: []const u8, entries: []const HashEntry, version: []const u8) !void {
+    // Ensure .zmodu/ dir exists
+    var dotmodu_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const dotmodu_path = try std.fmt.bufPrint(&dotmodu_buf, "{s}/.zmodu", .{project_dir});
+    Io.Dir.cwd().createDirPath(io, dotmodu_path) catch |err| {
+        if (err != error.PathAlreadyExists) return err;
+    };
+
+    const path = try std.fmt.allocPrint(allocator, "{s}/{s}", .{ project_dir, HASH_FILE_NAME });
+    defer allocator.free(path);
+
+    // Build JSON manually
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+
+    try buf.appendSlice(allocator, "{\n  \"generated_at\": \"2026-01-01T00:00:00Z\",\n  \"zmodu_version\": \"");
+    try buf.appendSlice(allocator, version);
+    try buf.appendSlice(allocator, "\",\n  \"files\": {\n");
+    for (entries, 0..) |entry, i| {
+        try buf.appendSlice(allocator, "    \"");
+        try buf.appendSlice(allocator, entry.path);
+        try buf.appendSlice(allocator, "\": \"");
+        try buf.appendSlice(allocator, &entry.hash);
+        try buf.appendSlice(allocator, "\"");
+        if (i < entries.len - 1) try buf.appendSlice(allocator, ",");
+        try buf.appendSlice(allocator, "\n");
+    }
+    try buf.appendSlice(allocator, "  }\n}\n");
+
+    const file = try Io.Dir.cwd().createFile(io, path, .{});
+    defer file.close(io);
+    try file.writeStreamingAll(io, buf.items);
 }
 
 // ── Tests ──
