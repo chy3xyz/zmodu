@@ -144,7 +144,8 @@ fn buildToolsCallResponse(io: Io, allocator: std.mem.Allocator, id: ?i64, params
     else
         return buildErrorResponseValue(allocator, id, -32602, "Unknown tool");
 
-    // Build MCP tool result: {content: [{type: "text", text: "..."}], isError: false}
+    // Build MCP tool result
+    const is_error = std.mem.startsWith(u8, result_text, "{\"error\":");
     var content_item: std.json.ObjectMap = .{};
     try content_item.put(allocator, "type", .{ .string = "text" });
     try content_item.put(allocator, "text", .{ .string = result_text });
@@ -154,7 +155,7 @@ fn buildToolsCallResponse(io: Io, allocator: std.mem.Allocator, id: ?i64, params
 
     var result: std.json.ObjectMap = .{};
     try result.put(allocator, "content", .{ .array = content_arr });
-    try result.put(allocator, "isError", .{ .bool = false });
+    try result.put(allocator, "isError", .{ .bool = is_error });
 
     return buildResponseValue(allocator, id, .{ .object = result });
 }

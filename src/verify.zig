@@ -97,8 +97,10 @@ fn checkModuleIntegrity(allocator: std.mem.Allocator, io: Io, project_dir: []con
         return CheckResult{ .name = "module_integrity", .status = .fail, .details = "path too long" };
 
     const dir = Dir.cwd().openDir(io, modules_path, .{ .iterate = true }) catch |err| {
-        const msg: []const u8 = if (err == error.FileNotFound) "src/modules/ directory not found" else "cannot open src/modules/";
-        return CheckResult{ .name = "module_integrity", .status = .fail, .details = msg };
+        if (err == error.FileNotFound) {
+            return CheckResult{ .name = "module_integrity", .status = .warn, .details = "src/modules/ directory not found (new project?)" };
+        }
+        return CheckResult{ .name = "module_integrity", .status = .fail, .details = "cannot open src/modules/" };
     };
     defer dir.close(io);
 

@@ -79,6 +79,49 @@ pub fn saveManifest(allocator: std.mem.Allocator, io: Io, project_dir: []const u
     try file.writeStreamingAll(io, buf.items);
 }
 
+/// Load hash manifest from disk. Returns empty map if file doesn't exist.
+/// Caller owns the returned map and must deinit it.
+pub fn loadManifest(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) std.StringHashMap([64]u8) {
+    var map = std.StringHashMap([64]u8).init(allocator);
+
+    var path_buf: [std.fs.max_path_bytes]u8 = undefined;
+    const path = std.fmt.bufPrint(&path_buf, "{s}/{s}", .{ project_dir, HASH_FILE_NAME }) catch return map;
+
+    const content = Io.Dir.cwd().readFileAlloc(io, path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch return map;
+    defer allocator.free(content);
+
+    // Parse the JSON manually to extract file hashes
+    // Look for pattern: "path": "hash"
+    var pos: usize = 0;
+    while (pos < content.len) {
+        // Find opening quote of a key
+        if (std.mem.indexOfPos(u8, content, pos, "\"")) |q1| {
+            // Find closing quote of key
+            if (std.mem.indexOfPos(u8, content, q1 + 1, "\"")) |q2| {
+                const key = content[q1 + 1 .. q2];
+                // Find value after ": "
+                if (std.mem.indexOfPos(u8, content, q2 + 1, "\"")) |v1| {
+                    if (std.mem.indexOfPos(u8, content, v1 + 1, "\"")) |v2| {
+                        const val = content[v1 + 1 .. v2];
+                        if (val.len == 64 and key.len > 0 and !std.mem.eql(u8, key, "generated_at") and
+                            !std.mem.eql(u8, key, "zmodu_version"))
+                        {
+                            var hash: [64]u8 = undefined;
+                            @memcpy(&hash, val[0..64]);
+                            map.put(allocator.dupe(u8, key) catch break, hash) catch break;
+                        }
+                        pos = v2 + 1;
+                        continue;
+                    }
+                }
+                pos = q2 + 1;
+            } else break;
+        } else break;
+    }
+
+    return map;
+}
+
 // ── Tests ──
 
 test "sha256Hex produces consistent 64-char hex" {
