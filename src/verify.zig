@@ -208,18 +208,29 @@ fn checkFileImports(
     const content = dir.readFileAlloc(io, file_name, allocator, Io.Limit.limited(1024 * 1024)) catch return;
     defer allocator.free(content);
 
+    // Scan for both @import("...") and @embedFile("...")
     const import_prefix = "@import(\"";
+    const embedfile_prefix = "@embedFile(\"";
     var pos: usize = 0;
     while (pos < content.len) {
-        const start = std.mem.indexOfPos(u8, content, pos, import_prefix) orelse break;
-        const val_start = start + import_prefix.len;
+        const import_start = std.mem.indexOfPos(u8, content, pos, import_prefix);
+        const embed_start = std.mem.indexOfPos(u8, content, pos, embedfile_prefix);
+        const start = blk: {
+            if (import_start == null and embed_start == null) break;
+            if (import_start == null) break :blk embed_start.?;
+            if (embed_start == null) break :blk import_start.?;
+            break :blk @min(import_start.?, embed_start.?);
+        };
+        const is_embed = embed_start != null and start == embed_start.?;
+        const prefix_len = if (is_embed) embedfile_prefix.len else import_prefix.len;
+        const val_start = start + prefix_len;
         const val_end = std.mem.indexOfScalarPos(u8, content, val_start, '"') orelse break;
         const import_path = content[val_start..val_end];
 
         // Skip std, builtin, and third-party package imports
-        if (std.mem.eql(u8, import_path, "std") or
+        if (!is_embed and (std.mem.eql(u8, import_path, "std") or
             std.mem.eql(u8, import_path, "builtin") or
-            std.mem.startsWith(u8, import_path, "zigmodu"))
+            std.mem.startsWith(u8, import_path, "zigmodu")))
         {
             pos = val_end + 1;
             continue;

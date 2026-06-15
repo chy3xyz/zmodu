@@ -66,3 +66,91 @@ pub fn expandTemplate(allocator: std.mem.Allocator, template: []const u8, keys: 
     }
     return buf.toOwnedSlice(allocator);
 }
+
+// ── Tests ──
+
+test "replaceAll basic substitution" {
+    const allocator = std.testing.allocator;
+    const result = try replaceAll(allocator, "hello WORLD world", "world", "zig");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("hello WORLD zig", result);
+}
+
+test "replaceAll no match returns original" {
+    const allocator = std.testing.allocator;
+    const result = try replaceAll(allocator, "hello", "xyz", "abc");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("hello", result);
+}
+
+test "replaceAll multiple occurrences" {
+    const allocator = std.testing.allocator;
+    const result = try replaceAll(allocator, "aabbcc", "b", "X");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("aaXXcc", result);
+}
+
+test "replaceAll empty replacement" {
+    const allocator = std.testing.allocator;
+    const result = try replaceAll(allocator, "remove-this-word", "-this-word", "");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("remove", result);
+}
+
+test "expandOrm substitutes both placeholders" {
+    const allocator = std.testing.allocator;
+    const tpl = "const T = struct { pub const table = \"<<MODULE_NAME>>\"; pub const Name = <<PASCAL_MODULE>>; };";
+    const result = try expandOrm(allocator, tpl, "user_profile", "UserProfile");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(
+        "const T = struct { pub const table = \"user_profile\"; pub const Name = UserProfile; };",
+        result,
+    );
+}
+
+test "expandOrm with no placeholders" {
+    const allocator = std.testing.allocator;
+    const result = try expandOrm(allocator, "no placeholders here", "mod", "Mod");
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("no placeholders here", result);
+}
+
+test "expandTemplate with multiple keys" {
+    const allocator = std.testing.allocator;
+    const tpl = "fn {{NAME}}(ctx: *{{TYPE}}) !void { return {{NAME}}Impl(ctx); }";
+    const keys = [_][]const u8{ "{{NAME}}", "{{TYPE}}" };
+    const vals = [_][]const u8{ "handleRequest", "Context" };
+    const result = try expandTemplate(allocator, tpl, &keys, &vals);
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings(
+        "fn handleRequest(ctx: *Context) !void { return handleRequestImpl(ctx); }",
+        result,
+    );
+}
+
+test "expandTemplate with no keys" {
+    const allocator = std.testing.allocator;
+    const result = try expandTemplate(allocator, "unchanged", &.{}, &.{});
+    defer allocator.free(result);
+    try std.testing.expectEqualStrings("unchanged", result);
+}
+
+test "embedded templates are non-empty" {
+    // Verify all @embedFile templates loaded correctly
+    try std.testing.expect(sqlx_model_header.len > 0);
+    try std.testing.expect(sqlx_persistence_header.len > 0);
+    try std.testing.expect(sqlx_service_header.len > 0);
+    try std.testing.expect(sqlx_api_header.len > 0);
+    try std.testing.expect(sqlx_module_zig.len > 0);
+    try std.testing.expect(sqlx_root_zig.len > 0);
+    try std.testing.expect(module_minimal_root_zig.len > 0);
+    try std.testing.expect(api_standalone_tpl.len > 0);
+    try std.testing.expect(event_tpl.len > 0);
+    try std.testing.expect(zent_schema_header.len > 0);
+    try std.testing.expect(zent_client_header.len > 0);
+    try std.testing.expect(zent_module_zig.len > 0);
+}
+
+test "sqlx_model_header contains MODULE_NAME placeholder" {
+    try std.testing.expect(std.mem.indexOf(u8, sqlx_model_header, "<<MODULE_NAME>>") != null);
+}
