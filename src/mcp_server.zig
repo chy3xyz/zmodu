@@ -2,6 +2,9 @@
 const std = @import("std");
 const Io = std.Io;
 const mcp_types = @import("mcp_types.zig");
+const verify_mod = @import("verify.zig");
+const main_mod = @import("main.zig");
+const sql_diff = @import("sql_diff.zig");
 
 /// Start the MCP server loop on stdin/stdout.
 /// Blocks until stdin is closed.
@@ -179,53 +182,81 @@ fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) 
         }
     }
 
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(allocator);
-    try argv.appendSlice(allocator, &.{ "zmodu", "verify", project_dir });
-    return runZmoduSubprocess(io, allocator, argv.items);
+    const report = verify_mod.verifyProject(allocator, io, project_dir) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"verify failed: {}\"}}", .{err});
+    };
+    defer {
+        allocator.free(report.checks);
+        for (report.errors) |e| allocator.free(e);
+        allocator.free(report.errors);
+        for (report.warnings) |w| allocator.free(w);
+        allocator.free(report.warnings);
+        allocator.free(report.summary);
+    }
+
+    if (report.pass) {
+        return std.fmt.allocPrint(allocator, "{{\"pass\":true,\"summary\":\"{s}\"}}", .{report.summary});
+    }
+    return std.fmt.allocPrint(allocator, "{{\"pass\":false,\"summary\":\"{s}\"}}", .{report.summary});
 }
 
 fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
     if (arguments == null) return callStub(allocator, "Missing arguments");
     const a = arguments.?.object;
-    const old_sql = a.get("old_sql") orelse return callStub(allocator, "Missing old_sql");
-    const new_sql = a.get("new_sql") orelse return callStub(allocator, "Missing new_sql");
+    const old_sql_path = a.get("old_sql") orelse return callStub(allocator, "Missing old_sql");
+    const new_sql_path = a.get("new_sql") orelse return callStub(allocator, "Missing new_sql");
 
-    var argv = std.ArrayList([]const u8).empty;
-    defer argv.deinit(allocator);
-    try argv.appendSlice(allocator, &.{ "zmodu", "diff", old_sql.string, new_sql.string });
-    return runZmoduSubprocess(io, allocator, argv.items);
-}
+    const old_sql = Io.Dir.cwd().readFileAlloc(io, old_sql_path.string, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"cannot read old_sql: {}\"}}", .{err});
+    };
+    defer allocator.free(old_sql);
+    const new_sql = Io.Dir.cwd().readFileAlloc(io, new_sql_path.string, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"cannot read new_sql: {}\"}}", .{err});
+    };
+    defer allocator.free(new_sql);
 
-fn runZmoduSubprocess(io: Io, allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
-    var full_argv = std.ArrayList([]const u8).empty;
-    defer full_argv.deinit(allocator);
-    // Always use local binary, skip the "zmodu" arg[0]
-    try full_argv.append(allocator, "./zig-out/bin/zmodu");
-    if (argv.len > 1) {
-        try full_argv.appendSlice(allocator, argv[1..]);
-    }
-    return runProcess(allocator, io, full_argv.items);
-}
+    const old_tables = main_mod.parseSqlSchema(allocator, old_sql) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"parse old SQL failed: {}\"}}", .{err});
+    };
+    defer allocator.free(old_tables);
+    const new_tables = main_mod.parseSqlSchema(allocator, new_sql) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"parse new SQL failed: {}\"}}", .{err});
+    };
+    defer allocator.free(new_tables);
 
-fn runProcess(allocator: std.mem.Allocator, io: Io, argv: []const []const u8) ![]const u8 {
-    const result = std.process.run(allocator, io, .{
-        .argv = argv,
-    }) catch |err| {
-        return std.fmt.allocPrint(allocator, "{{\"error\":\"failed to run: {}\"}}", .{err});
+    const diffs = sql_diff.diffTables(allocator, old_tables, new_tables) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"diff failed: {}\"}}", .{err});
     };
     defer {
-        allocator.free(result.stdout);
-        allocator.free(result.stderr);
+        for (diffs) |d| if (d.column_changes.len > 0) allocator.free(d.column_changes);
+        allocator.free(diffs);
     }
 
-    if (result.term.success() and result.stdout.len > 0) {
-        return try allocator.dupe(u8, result.stdout);
+    if (diffs.len == 0) {
+        return allocator.dupe(u8, "{\"changed_tables\":0,\"diffs\":[]}");
     }
 
-    return try std.fmt.allocPrint(allocator, "{{\"success\":false,\"exit_code\":{d}}}", .{
-        if (result.term == .exited) result.term.exited else 1,
-    });
+    // Build simple JSON output using allocPrint
+    var parts = std.ArrayList(u8).empty;
+    defer parts.deinit(allocator);
+    try parts.appendSlice(allocator, "{\"changed_tables\":");
+    const count_str = try std.fmt.allocPrint(allocator, "{d}", .{diffs.len});
+    defer allocator.free(count_str);
+    try parts.appendSlice(allocator, count_str);
+    try parts.appendSlice(allocator, ",\"diffs\":[");
+    for (diffs, 0..) |d, i| {
+        if (i > 0) try parts.appendSlice(allocator, ",");
+        const change_str = switch (d.change_type) {
+            .added => "added",
+            .removed => "removed",
+            .modified => "modified",
+        };
+        const entry = try std.fmt.allocPrint(allocator, "{{\"table\":\"{s}\",\"change\":\"{s}\"}}", .{ d.table_name, change_str });
+        defer allocator.free(entry);
+        try parts.appendSlice(allocator, entry);
+    }
+    try parts.appendSlice(allocator, "]}");
+    return parts.toOwnedSlice(allocator);
 }
 
 // ── Helpers ──
