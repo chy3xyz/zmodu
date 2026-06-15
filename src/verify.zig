@@ -96,7 +96,7 @@ fn checkModuleIntegrity(allocator: std.mem.Allocator, io: Io, project_dir: []con
     const modules_path = std.fmt.bufPrint(&path_buf, "{s}/src/modules", .{project_dir}) catch
         return CheckResult{ .name = "module_integrity", .status = .fail, .details = "path too long" };
 
-    const dir = Dir.openDirAbsolute(io, modules_path, .{ .iterate = true }) catch |err| {
+    const dir = Dir.cwd().openDir(io, modules_path, .{ .iterate = true }) catch |err| {
         const msg: []const u8 = if (err == error.FileNotFound) "src/modules/ directory not found" else "cannot open src/modules/";
         return CheckResult{ .name = "module_integrity", .status = .fail, .details = msg };
     };
@@ -147,7 +147,7 @@ fn checkImportConsistency(allocator: std.mem.Allocator, io: Io, project_dir: []c
     const src_path = std.fmt.bufPrint(&src_buf, "{s}/src", .{project_dir}) catch
         return CheckResult{ .name = "import_consistency", .status = .warn, .details = "path too long" };
 
-    const src_dir = Dir.openDirAbsolute(io, src_path, .{ .iterate = true }) catch
+    const src_dir = Dir.cwd().openDir(io, src_path, .{ .iterate = true }) catch
         return CheckResult{ .name = "import_consistency", .status = .warn, .details = "src/ directory not found" };
     defer src_dir.close(io);
 
@@ -232,7 +232,7 @@ fn checkFileImports(
         };
 
         // Check if the resolved file exists
-        Dir.accessAbsolute(io, resolved, .{}) catch {
+        Dir.cwd().access(io, resolved, .{}) catch {
             try missing.appendSlice(allocator, file_abs_path);
             try missing.appendSlice(allocator, " -> ");
             try missing.appendSlice(allocator, import_path);
@@ -245,8 +245,6 @@ fn checkFileImports(
 
 /// Spawn `zig build` in the project directory and check if it succeeds.
 fn checkCompile(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) !CheckResult {
-    const start = std.time.milliTimestamp();
-
     const result = std.process.run(allocator, io, .{
         .argv = &.{ "zig", "build" },
         .cwd = .{ .path = project_dir },
@@ -255,7 +253,6 @@ fn checkCompile(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) !
             .name = "compile",
             .status = .fail,
             .details = try std.fmt.allocPrint(allocator, "failed to spawn zig build: {}", .{err}),
-            .duration_ms = @intCast(std.time.milliTimestamp() - start),
         };
     };
     defer {
@@ -263,14 +260,8 @@ fn checkCompile(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) !
         allocator.free(result.stderr);
     }
 
-    const elapsed: u64 = @intCast(std.time.milliTimestamp() - start);
-
     if (result.term.success()) {
-        return CheckResult{
-            .name = "compile",
-            .status = .pass,
-            .duration_ms = elapsed,
-        };
+        return CheckResult{ .name = "compile", .status = .pass };
     }
 
     // Extract first error line from stderr
@@ -287,7 +278,6 @@ fn checkCompile(allocator: std.mem.Allocator, io: Io, project_dir: []const u8) !
         .name = "compile",
         .status = .fail,
         .details = try std.fmt.allocPrint(allocator, "zig build failed: {s}", .{first_line}),
-        .duration_ms = elapsed,
     };
 }
 

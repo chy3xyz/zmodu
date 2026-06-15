@@ -2,6 +2,7 @@
 const std = @import("std");
 const orm_tpl = @import("orm_tpl.zig");
 const mcp_server = @import("mcp_server.zig");
+const verify_mod = @import("verify.zig");
 
 const Command = enum {
     new,
@@ -20,6 +21,7 @@ const Command = enum {
     life,
     upgrade,
     mcp,
+    verify,
     help,
     version,
 };
@@ -214,6 +216,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .life => try cmdLife(io, allocator, cmd_args),
         .upgrade => try cmdUpgrade(io, allocator, cmd_args),
         .mcp => try cmdMcp(io, allocator),
+        .verify => try cmdVerify(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -322,6 +325,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "life")) return .life;
     if (std.mem.eql(u8, cmd, "upgrade")) return .upgrade;
     if (std.mem.eql(u8, cmd, "mcp")) return .mcp;
+    if (std.mem.eql(u8, cmd, "verify")) return .verify;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -353,6 +357,7 @@ fn printUsage() void {
         \\  life           Project evolutionary memory (tree, fingerprint, evolve)
         \\  upgrade        Upgrade zmodu to latest (git pull + zig build)
         \\  mcp            Start MCP server (for AI agent integration)
+        \\  verify [dir]   Verify project compiles and has correct structure
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -473,6 +478,32 @@ fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8
 
 fn cmdMcp(io: std.Io, allocator: std.mem.Allocator) !void {
     try mcp_server.start(io, allocator);
+}
+
+fn cmdVerify(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    const project_dir = if (args.len > 0) args[0] else ".";
+    const report = try verify_mod.verifyProject(allocator, io, project_dir);
+    defer {
+        allocator.free(report.checks);
+        // details strings are owned by errors/warnings, don't double-free
+        for (report.errors) |e| allocator.free(e);
+        allocator.free(report.errors);
+        for (report.warnings) |w| allocator.free(w);
+        allocator.free(report.warnings);
+        allocator.free(report.summary);
+    }
+
+    // Simple JSON output via io
+    var out_buf: [4096]u8 = undefined;
+    var out_file = std.Io.File.stdout();
+    var out_writer = out_file.writer(io, &out_buf);
+    const stdout = &out_writer.interface;
+    if (report.pass) {
+        try stdout.print("{{\"pass\":true,\"summary\":\"{s}\"}}\n", .{report.summary});
+    } else {
+        try stdout.print("{{\"pass\":false,\"summary\":\"{s}\"}}\n", .{report.summary});
+    }
+    try stdout.flush();
 }
 
 fn cmdNew(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
