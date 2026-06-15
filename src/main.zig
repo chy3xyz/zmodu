@@ -1,8 +1,10 @@
 // ZModu - Code generation tool for ZigModu
 const std = @import("std");
+const Io = std.Io;
 const orm_tpl = @import("orm_tpl.zig");
 const mcp_server = @import("mcp_server.zig");
 const verify_mod = @import("verify.zig");
+const sql_diff = @import("sql_diff.zig");
 
 const Command = enum {
     new,
@@ -22,6 +24,7 @@ const Command = enum {
     upgrade,
     mcp,
     verify,
+    diff,
     help,
     version,
 };
@@ -217,6 +220,7 @@ fn runCommand(io: std.Io, allocator: std.mem.Allocator, command: Command, cmd_ar
         .upgrade => try cmdUpgrade(io, allocator, cmd_args),
         .mcp => try cmdMcp(io, allocator),
         .verify => try cmdVerify(io, allocator, cmd_args),
+        .diff => try cmdDiff(io, allocator, cmd_args),
         .help => {
             if (cmd_args.len != 0) {
                 std.log.err("`zmodu help` does not accept arguments (got {d}).", .{cmd_args.len});
@@ -326,6 +330,7 @@ fn parseCommand(cmd: []const u8) ?Command {
     if (std.mem.eql(u8, cmd, "upgrade")) return .upgrade;
     if (std.mem.eql(u8, cmd, "mcp")) return .mcp;
     if (std.mem.eql(u8, cmd, "verify")) return .verify;
+    if (std.mem.eql(u8, cmd, "diff")) return .diff;
     if (std.mem.eql(u8, cmd, "help")) return .help;
     if (std.mem.eql(u8, cmd, "version")) return .version;
     if (std.mem.eql(u8, cmd, "--help")) return .help;
@@ -358,6 +363,7 @@ fn printUsage() void {
         \\  upgrade        Upgrade zmodu to latest (git pull + zig build)
         \\  mcp            Start MCP server (for AI agent integration)
         \\  verify [dir]   Verify project compiles and has correct structure
+        \\  diff <old> <new>  Compare two SQL files, show table-level changes
         \\  generate <t>   Alias: generate module|event|api|orm [...]
         \\  help            Show help
         \\  version         Show version
@@ -502,6 +508,69 @@ fn cmdVerify(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8)
         try stdout.print("{{\"pass\":true,\"summary\":\"{s}\"}}\n", .{report.summary});
     } else {
         try stdout.print("{{\"pass\":false,\"summary\":\"{s}\"}}\n", .{report.summary});
+    }
+    try stdout.flush();
+}
+
+fn cmdDiff(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {
+    if (args.len < 2) {
+        std.log.err("Usage: zmodu diff <old.sql> <new.sql>", .{});
+        return error.CliUsage;
+    }
+    const old_path = args[0];
+    const new_path = args[1];
+
+    const old_sql = Io.Dir.cwd().readFileAlloc(io, old_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        std.log.err("Cannot read {s}: {}", .{ old_path, err });
+        return error.CliUsage;
+    };
+    defer allocator.free(old_sql);
+    const new_sql = Io.Dir.cwd().readFileAlloc(io, new_path, allocator, Io.Limit.limited(10 * 1024 * 1024)) catch |err| {
+        std.log.err("Cannot read {s}: {}", .{ new_path, err });
+        return error.CliUsage;
+    };
+    defer allocator.free(new_sql);
+
+    const old_tables = parseSqlSchema(allocator, old_sql) catch |err| {
+        std.log.err("Failed to parse old SQL: {}", .{err});
+        return error.CliUsage;
+    };
+    defer allocator.free(old_tables);
+    const new_tables = parseSqlSchema(allocator, new_sql) catch |err| {
+        std.log.err("Failed to parse new SQL: {}", .{err});
+        return error.CliUsage;
+    };
+    defer allocator.free(new_tables);
+
+    const diffs = sql_diff.diffTables(allocator, old_tables, new_tables) catch |err| {
+        std.log.err("Diff failed: {}", .{err});
+        return error.CliUsage;
+    };
+    defer {
+        for (diffs) |d| if (d.column_changes.len > 0) allocator.free(d.column_changes);
+        allocator.free(diffs);
+    }
+
+    // Output
+    var out_buf: [65536]u8 = undefined;
+    var out_file = Io.File.stdout();
+    var out_writer = out_file.writer(io, &out_buf);
+    const stdout = &out_writer.interface;
+
+    if (diffs.len == 0) {
+        try stdout.writeAll("{\"changed_tables\":0,\"diffs\":[]}\n");
+    } else {
+        try stdout.print("{{\"changed_tables\":{d},\"diffs\":[", .{diffs.len});
+        for (diffs, 0..) |d, i| {
+            if (i > 0) try stdout.writeByte(',');
+            const change_str = switch (d.change_type) {
+                .added => "added",
+                .removed => "removed",
+                .modified => "modified",
+            };
+            try stdout.print("{{\"table\":\"{s}\",\"change\":\"{s}\"}}", .{ d.table_name, change_str });
+        }
+        try stdout.writeAll("]}\n");
     }
     try stdout.flush();
 }

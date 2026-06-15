@@ -28,7 +28,7 @@ pub fn start(io: Io, allocator: std.mem.Allocator) !void {
         if (n == 0) continue;
         const line = line_buf[0..n];
 
-        const response = handleMessage(allocator, line) catch |err| {
+        const response = handleMessage(io, allocator, line) catch |err| {
             const resp = try mcp_types.errorResponse(allocator, null, -32603, @errorName(err));
             defer allocator.free(resp);
             try stdout.writeAll(resp);
@@ -46,7 +46,7 @@ pub fn start(io: Io, allocator: std.mem.Allocator) !void {
 
 /// Parse a JSON-RPC request line and dispatch to the appropriate handler.
 /// Returns an owned string (caller must free with allocator).
-pub fn handleMessage(allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
+pub fn handleMessage(io: Io, allocator: std.mem.Allocator, line: []const u8) ![]const u8 {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, line, .{}) catch {
         return mcp_types.errorResponse(allocator, null, -32700, "Parse error");
     };
@@ -71,7 +71,7 @@ pub fn handleMessage(allocator: std.mem.Allocator, line: []const u8) ![]const u8
     else if (std.mem.eql(u8, method_str, "tools/list"))
         try buildToolsList(aa, id)
     else if (std.mem.eql(u8, method_str, "tools/call"))
-        try buildToolsCallResponse(aa, id, root.get("params"))
+        try buildToolsCallResponse(io, aa, id, root.get("params"))
     else if (std.mem.eql(u8, method_str, "notifications/initialized"))
         return if (id == null) allocator.dupe(u8, "") else mcp_types.errorResponse(allocator, id, -32601, "Method not found")
     else
@@ -119,13 +119,14 @@ fn buildToolsList(allocator: std.mem.Allocator, id: ?i64) !std.json.Value {
     return buildResponseValue(allocator, id, .{ .object = result });
 }
 
-fn buildToolsCallResponse(allocator: std.mem.Allocator, id: ?i64, params: ?std.json.Value) !std.json.Value {
+fn buildToolsCallResponse(io: Io, allocator: std.mem.Allocator, id: ?i64, params: ?std.json.Value) !std.json.Value {
     if (params == null) {
         return buildErrorResponseValue(allocator, id, -32602, "Missing params");
     }
     const p = params.?.object;
     const tool_name_val = p.get("name") orelse return buildErrorResponseValue(allocator, id, -32602, "Missing tool name");
     const tool_name = tool_name_val.string;
+    const arguments = p.get("arguments");
 
     const result_text = if (std.mem.eql(u8, tool_name, "zmodu_version"))
         try callVersion(allocator)
@@ -134,9 +135,9 @@ fn buildToolsCallResponse(allocator: std.mem.Allocator, id: ?i64, params: ?std.j
     else if (std.mem.eql(u8, tool_name, "zmodu_module"))
         try callStub(allocator, "module not yet wired")
     else if (std.mem.eql(u8, tool_name, "zmodu_verify"))
-        try callStub(allocator, "verify not yet wired")
+        try callVerify(io, allocator, arguments)
     else if (std.mem.eql(u8, tool_name, "zmodu_diff"))
-        try callStub(allocator, "diff not yet wired")
+        try callDiff(io, allocator, arguments)
     else
         return buildErrorResponseValue(allocator, id, -32602, "Unknown tool");
 
@@ -168,6 +169,63 @@ fn callStub(allocator: std.mem.Allocator, message: []const u8) ![]const u8 {
     var obj: std.json.ObjectMap = .{};
     try obj.put(allocator, "error", .{ .string = message });
     return try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
+}
+
+fn callVerify(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
+    var project_dir: []const u8 = ".";
+    if (arguments) |a| {
+        if (a.object.get("project_dir")) |v| {
+            project_dir = v.string;
+        }
+    }
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &.{ "zmodu", "verify", project_dir });
+    return runZmoduSubprocess(io, allocator, argv.items);
+}
+
+fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![]const u8 {
+    if (arguments == null) return callStub(allocator, "Missing arguments");
+    const a = arguments.?.object;
+    const old_sql = a.get("old_sql") orelse return callStub(allocator, "Missing old_sql");
+    const new_sql = a.get("new_sql") orelse return callStub(allocator, "Missing new_sql");
+
+    var argv = std.ArrayList([]const u8).empty;
+    defer argv.deinit(allocator);
+    try argv.appendSlice(allocator, &.{ "zmodu", "diff", old_sql.string, new_sql.string });
+    return runZmoduSubprocess(io, allocator, argv.items);
+}
+
+fn runZmoduSubprocess(io: Io, allocator: std.mem.Allocator, argv: []const []const u8) ![]const u8 {
+    var full_argv = std.ArrayList([]const u8).empty;
+    defer full_argv.deinit(allocator);
+    // Always use local binary, skip the "zmodu" arg[0]
+    try full_argv.append(allocator, "./zig-out/bin/zmodu");
+    if (argv.len > 1) {
+        try full_argv.appendSlice(allocator, argv[1..]);
+    }
+    return runProcess(allocator, io, full_argv.items);
+}
+
+fn runProcess(allocator: std.mem.Allocator, io: Io, argv: []const []const u8) ![]const u8 {
+    const result = std.process.run(allocator, io, .{
+        .argv = argv,
+    }) catch |err| {
+        return std.fmt.allocPrint(allocator, "{{\"error\":\"failed to run: {}\"}}", .{err});
+    };
+    defer {
+        allocator.free(result.stdout);
+        allocator.free(result.stderr);
+    }
+
+    if (result.term.success() and result.stdout.len > 0) {
+        return try allocator.dupe(u8, result.stdout);
+    }
+
+    return try std.fmt.allocPrint(allocator, "{{\"success\":false,\"exit_code\":{d}}}", .{
+        if (result.term == .exited) result.term.exited else 1,
+    });
 }
 
 // ── Helpers ──
@@ -238,14 +296,14 @@ fn makeToolSchema(allocator: std.mem.Allocator, name: []const u8, description: [
 
 test "handleMessage returns error for invalid JSON" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "not json");
+    const resp = try handleMessage(std.testing.io, allocator, "not json");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "Parse error") != null);
 }
 
 test "handleMessage dispatches initialize" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"initialize\",\"params\":{}}");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "zmodu") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "protocolVersion") != null);
@@ -253,7 +311,7 @@ test "handleMessage dispatches initialize" {
 
 test "handleMessage dispatches tools/list" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"id\":2,\"method\":\"tools/list\"}");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "zmodu_scaffold") != null);
     try std.testing.expect(std.mem.indexOf(u8, resp, "zmodu_version") != null);
@@ -263,28 +321,28 @@ test "handleMessage dispatches tools/list" {
 
 test "handleMessage returns error for unknown method" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"unknown\"}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"id\":3,\"method\":\"unknown\"}");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "Method not found") != null);
 }
 
 test "handleMessage dispatches tools/call for version" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"zmodu_version\",\"arguments\":{}}}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"id\":4,\"method\":\"tools/call\",\"params\":{\"name\":\"zmodu_version\",\"arguments\":{}}}");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "0.14.9") != null);
 }
 
 test "handleMessage handles notification (no id)" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"method\":\"notifications/initialized\"}");
     defer allocator.free(resp);
     try std.testing.expectEqual(@as(usize, 0), resp.len);
 }
 
 test "handleMessage returns error for tools/call with unknown tool" {
     const allocator = std.testing.allocator;
-    const resp = try handleMessage(allocator, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"unknown_tool\",\"arguments\":{}}}");
+    const resp = try handleMessage(std.testing.io, allocator, "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"unknown_tool\",\"arguments\":{}}}");
     defer allocator.free(resp);
     try std.testing.expect(std.mem.indexOf(u8, resp, "Unknown tool") != null);
 }
