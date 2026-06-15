@@ -3,7 +3,7 @@ const std = @import("std");
 const main_mod = @import("main.zig");
 
 pub const ChangeType = enum { added, removed, modified };
-pub const ColumnChangeType = enum { added, removed, type_changed };
+pub const ColumnChangeType = enum { added, removed, type_changed, nullable_changed, default_changed };
 
 pub const ColumnChange = struct {
     column_name: []const u8,
@@ -85,7 +85,7 @@ fn diffColumns(allocator: std.mem.Allocator, old_cols: []const main_mod.ColumnDe
         try new_col_map.put(c.name, c);
     }
 
-    // Added or type-changed columns
+    // Added or changed columns
     for (new_cols) |*new_c| {
         if (old_col_map.get(new_c.name)) |old_c| {
             if (old_c.col_type != new_c.col_type) {
@@ -94,6 +94,22 @@ fn diffColumns(allocator: std.mem.Allocator, old_cols: []const main_mod.ColumnDe
                     .change_type = .type_changed,
                     .old_type = @tagName(old_c.col_type),
                     .new_type = @tagName(new_c.col_type),
+                });
+            }
+            if (old_c.nullable != new_c.nullable) {
+                try changes.append(allocator, .{
+                    .column_name = new_c.name,
+                    .change_type = .nullable_changed,
+                    .old_type = if (old_c.nullable) "nullable" else "not_null",
+                    .new_type = if (new_c.nullable) "nullable" else "not_null",
+                });
+            }
+            if (old_c.has_default != new_c.has_default) {
+                try changes.append(allocator, .{
+                    .column_name = new_c.name,
+                    .change_type = .default_changed,
+                    .old_type = if (old_c.has_default) "has_default" else "no_default",
+                    .new_type = if (new_c.has_default) "has_default" else "no_default",
                 });
             }
         } else {

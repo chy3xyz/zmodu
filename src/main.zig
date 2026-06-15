@@ -3,6 +3,8 @@ const std = @import("std");
 const Io = std.Io;
 const orm_tpl = @import("orm_tpl.zig");
 const mcp_server = @import("mcp_server.zig");
+
+pub const ZMODU_VERSION = "0.14.9";
 const verify_mod = @import("verify.zig");
 const sql_diff = @import("sql_diff.zig");
 const incremental = @import("incremental.zig");
@@ -400,7 +402,7 @@ fn printUsage() void {
 }
 
 fn printVersion() void {
-    std.log.info("zmodu v0.14.9", .{});
+    std.log.info("zmodu v{s}", .{ZMODU_VERSION});
 }
 
 fn cmdUpgrade(io: std.Io, allocator: std.mem.Allocator, args: []const []const u8) !void {

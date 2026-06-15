@@ -91,7 +91,7 @@ fn buildInitialize(allocator: std.mem.Allocator, id: ?i64) !std.json.Value {
     try result.put(allocator, "capabilities", .{ .object = .{} });
     var server_info: std.json.ObjectMap = .{};
     try server_info.put(allocator, "name", .{ .string = "zmodu" });
-    try server_info.put(allocator, "version", .{ .string = "0.14.9" });
+    try server_info.put(allocator, "version", .{ .string = main_mod.ZMODU_VERSION });
     try result.put(allocator, "serverInfo", .{ .object = server_info });
     return buildResponseValue(allocator, id, .{ .object = result });
 }
@@ -163,7 +163,7 @@ fn buildToolsCallResponse(io: Io, allocator: std.mem.Allocator, id: ?i64, params
 
 fn callVersion(allocator: std.mem.Allocator) ![]const u8 {
     var obj: std.json.ObjectMap = .{};
-    try obj.put(allocator, "version", .{ .string = "0.14.9" });
+    try obj.put(allocator, "version", .{ .string = main_mod.ZMODU_VERSION });
     try obj.put(allocator, "zig_version", .{ .string = "0.17.0" });
     return try std.json.Stringify.valueAlloc(allocator, std.json.Value{ .object = obj }, .{});
 }
@@ -357,6 +357,8 @@ fn callDiff(io: Io, allocator: std.mem.Allocator, arguments: ?std.json.Value) ![
                     .added => "added",
                     .removed => "removed",
                     .type_changed => "type_changed",
+                    .nullable_changed => "nullable_changed",
+                    .default_changed => "default_changed",
                 };
                 const esc_col = try jsonEscape(allocator, cc.column_name);
                 defer allocator.free(esc_col);
