@@ -1,4 +1,4 @@
-# zmodu v0.14.9
+# zmodu v0.15.0
 
 Code generation CLI for [zigmodu](https://github.com/chy3xyz/zigmodu). Modulith architecture scaffolding with AI-assisted development via MCP protocol. Zig 0.17+.
 

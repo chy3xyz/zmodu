@@ -4,7 +4,7 @@ const Io = std.Io;
 const orm_tpl = @import("orm_tpl.zig");
 const mcp_server = @import("mcp_server.zig");
 
-pub const ZMODU_VERSION = "0.14.9";
+pub const ZMODU_VERSION = "0.15.0";
 const verify_mod = @import("verify.zig");
 const sql_diff = @import("sql_diff.zig");
 const incremental = @import("incremental.zig");
