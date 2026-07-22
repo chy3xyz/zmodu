@@ -1,0 +1,17 @@
+.{
+    .name = .shopdemo,
+    .version = "0.1.0",
+    .fingerprint = 0x8d216645cae9074,
+    .minimum_zig_version = "0.17.0",
+    .dependencies = .{
+        .zigmodu = .{
+            .url = "https://github.com/chy3xyz/zigmodu/archive/refs/tags/v0.14.3.tar.gz",
+            .hash = "zigmodu-0.14.3-U40vsxIZGgBUCsore9xye9LR89KhP1W8f_xF2O0mqmJQ",
+        },
+    },
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "src",
+    },
+}
