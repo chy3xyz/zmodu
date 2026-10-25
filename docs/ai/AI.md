@@ -95,7 +95,9 @@ Reasoning-era families differ from the classic OpenAI API in three request field
 |-------|-----------------|------------------|-------|
 | output cap | `max_tokens` | `max_completion_tokens` | `max_completion_tokens` |
 | `temperature` | the configured value | omitted (server default only) | omitted |
-| `reasoning_effort` | not sent | not sent | `medium` **when `tools` is present** |
+| `reasoning_effort` | not sent | not sent | the literal `"none"` **when `tools` is present** |
+
+On `/v1/chat/completions` a tool-carrying gpt-6 request that *omits* `reasoning_effort` is rejected, and so is any value other than `"none"` (`low` / `medium` / `high` belong to the Responses API). That is why `.off` (omit the field) and `.none` (send the literal) are distinct values.
 
 That knowledge lives in one table (`compatForModel`, one row per family) and is resolved from the model name, including gateway-qualified names such as `openrouter/openai/gpt-5-mini`. A name no family matches — an Azure deployment, a renamed proxy, an older model — gets the classic profile rather than a guess.
 
@@ -105,7 +107,7 @@ ai_provider.compat = null;                       // default: resolve from the mo
 ai_provider.compat = .{                          // pin a deployment the table cannot see
     .token_limit = .max_completion_tokens,
     .temperature = .omit,
-    .reasoning_effort = .medium,
+    .reasoning_effort = .none,                   // literal "none"; .off would omit the field
 };
 
 ai_provider.compat = .{ .temperature = .send };  // patch one dimension; the rest keeps the profile
@@ -114,7 +116,7 @@ ai_provider.compat = .{ .temperature = .send };  // patch one dimension; the res
 A value you pin (in `compat`, or in the deprecated aliases below) is sent on every request; a value that comes from the profile is sent only where that family requires it. The resolved dialect is logged once per provider, so a `400` is not the first place you learn what was sent:
 
 ```text
-[ai] model=gpt-6-luna compat: token=max_completion_tokens temperature=omit reasoning_effort=medium (tools only)
+[ai] model=gpt-6-luna compat: token=max_completion_tokens temperature=omit reasoning_effort=none (tools only)
 ```
 
 Deprecated, kept for one release: `token_limit_param` / `temperature_param` / `reasoning_effort` still work and win over `compat`; use `compat` instead.

@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### 修复：gpt-6 带工具时 `reasoning_effort` 必须是字面量 `"none"`
+
+- 0.43.2 的 gpt-6 profile 发的是 `"medium"`，但 OpenAI `/v1/chat/completions` 在带
+  `function` tools 时只接受字面量 `"none"`；省略该字段同样 400。`ReasoningEffort` 因此新增
+  `none`（发送字面量）——与 `off`（省略字段）语义不同，两者不可互换：`off` 在带工具的
+  gpt-6 请求上就是那个 400。
+- gpt-6 profile 改为 `.reasoning_effort = .none`；`low` / `medium` / `high` 保留给 Responses
+  API 及其他支持该取值的后端。
+- 兼容日志把"省略"从 `reasoning_effort=none` 改为 `reasoning_effort=omitted`，避免与字面量
+  `none` 混淆。
+- 新增测试：gpt-6 + `tools_json` 的请求体必须含 `"reasoning_effort":"none"`，不带 tools 时
+  该字段不出现；重命名部署的 `compat` 示例同步改为 `.none`。
+
 ## [0.43.2] - 2026-10-23
 
 ### AI：请求方言收敛为一张 `ModelCompat` 表
