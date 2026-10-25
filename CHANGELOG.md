@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.43.3] - 2026-10-25
 
 ### 修复：gpt-6 带工具时 `reasoning_effort` 必须是字面量 `"none"`
 
