@@ -204,16 +204,19 @@ pub const SecurityScanner = struct {
             }
 
             if (rule.check_fn(source_code)) |message| {
-                const finding = SecurityFinding{
+                const message_copy = try self.allocator.dupe(u8, message);
+                errdefer self.allocator.free(message_copy);
+                const file_path_copy = try self.allocator.dupe(u8, file_path);
+                errdefer self.allocator.free(file_path_copy);
+                try self.findings.append(.{
                     .rule_id = rule.id,
                     .severity = rule.severity,
-                    .message = try self.allocator.dupe(u8, message),
-                    .file_path = try self.allocator.dupe(u8, file_path),
+                    .message = message_copy,
+                    .file_path = file_path_copy,
                     .line_number = null,
                     .column = null,
                     .suggestion = null,
-                };
-                try self.findings.append(finding);
+                });
             }
         }
     }
@@ -414,16 +417,25 @@ pub const DependencyScanner = struct {
         });
         errdefer self.allocator.free(key);
 
-        const owned_vuln = Vulnerability{
-            .id = try self.allocator.dupe(u8, vuln.id),
-            .package_name = try self.allocator.dupe(u8, vuln.package_name),
-            .affected_versions = try self.allocator.dupe(u8, vuln.affected_versions),
-            .severity = vuln.severity,
-            .description = try self.allocator.dupe(u8, vuln.description),
-            .fix_version = if (vuln.fix_version) |v| try self.allocator.dupe(u8, v) else null,
-        };
+        const id_copy = try self.allocator.dupe(u8, vuln.id);
+        errdefer self.allocator.free(id_copy);
+        const package_copy = try self.allocator.dupe(u8, vuln.package_name);
+        errdefer self.allocator.free(package_copy);
+        const affected_copy = try self.allocator.dupe(u8, vuln.affected_versions);
+        errdefer self.allocator.free(affected_copy);
+        const description_copy = try self.allocator.dupe(u8, vuln.description);
+        errdefer self.allocator.free(description_copy);
+        const fix_copy: ?[]const u8 = if (vuln.fix_version) |v| try self.allocator.dupe(u8, v) else null;
+        errdefer if (fix_copy) |v| self.allocator.free(v);
 
-        try self.vulnerability_db.put(key, owned_vuln);
+        try self.vulnerability_db.put(key, .{
+            .id = id_copy,
+            .package_name = package_copy,
+            .affected_versions = affected_copy,
+            .severity = vuln.severity,
+            .description = description_copy,
+            .fix_version = fix_copy,
+        });
     }
 
     /// Known vulnerability for `package_name`, or null. `version` is not consulted yet.
@@ -525,6 +537,24 @@ test "SecurityScanner Severity" {
 
     const severity = SecurityScanner.Severity.fromString("HIGH");
     try testing.expectEqual(SecurityScanner.Severity.HIGH, severity.?);
+}
+
+test "DependencyScanner.addVulnerability releases partial copies when an allocation fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var scanner = DependencyScanner.init(a);
+            defer scanner.deinit();
+            try scanner.addVulnerability(.{
+                .id = "CVE-2026-0001",
+                .package_name = "pkg",
+                .affected_versions = "<1.0.0",
+                .severity = .HIGH,
+                .description = "demo",
+                .fix_version = "1.0.0",
+            });
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
 }
 
 test "DependencyScanner" {

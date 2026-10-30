@@ -1,5 +1,56 @@
 # Changelog
 
+## [Unreleased]
+
+### 修复：迁移文件解析的重复标记泄漏
+
+- `MigrationLoader.parseMigrationFile` 在遇到重复的 `-- description:` / `-- rollback:`
+  标记时，把上一份 `dupe` 直接覆盖 —— 指针在函数返回前就丢了，调用方拿到的是最后一份，
+  前面的分配无从释放。同一文件出现 2 行以上 `-- rollback:` 就会漏一次（下游实测 3 行
+  漏 2 份、约 400 B）。
+- 修法是覆盖前先释放（free-before-overwrite）：两个字段都在 `dupe` 新值之前
+  `if (old) |p| allocator.free(p)`。**语义不变**：重复标记仍是最后一条生效。
+- 顺带修掉同一函数的两个失败路径泄漏：解析失败时 `description` 之外的中间分配没人释放；
+  `toOwnedSlice` 失败时已转移的 `sql` / `description` 也会漏。现在所有部分分配都有
+  `errdefer` 兜底。
+- 新增测试：单文件 3 条 `-- rollback:` + 2 条 `-- description:` 在 testing allocator 下
+  不泄漏（旧代码在此会红），并断言 last-wins；另加覆盖所有失败点的 OOM 扫描。
+- 同类问题一并修掉（全仓只有这一处）：`test.RouteTemplate.Capture.record` 每次请求都
+  `dupe` 覆盖上一条 capture，只有 `reset()` 释放最后一份——同一个 capture 连发两次就漏。
+  改为覆盖前释放，并新增「同一服务器 dispatch 两次」的用例（去掉 free 时该用例报
+  `1 leaked`）。
+
+### 加固：失败路径的部分分配（配合 OOM 扫描）
+
+- `GrpcTransport.ProtoParser.parse`：三处 `errdefer`（已完成的 services、进行中的
+  service、其 methods），并新增公共 `deinitServices` / 内部 `deinitMethods`、`appendMethod`
+  （三次 `dupe` 逐个守卫）。新增 `checkAllAllocationFailures` 扫描——它立刻抓到了最隐蔽的一层：
+  `toOwnedSlice` 之后的 `services.append` 失败时，methods **数组里的字符串**没人释放。
+- `test.ContractTest`：`appendFailure` / `cloneHeaders` / `freeContract` 收口所有权，
+  `verifyResponse` 的失败列表加 `errdefer`（后续构造失败时已追加的记录不再搁浅），
+  `registerContract` 的 `append` 失败时释放已 clone 的 contract。新增两个 OOM 扫描。
+- `benchmark.zig`：steps 名称的 `defer` 从循环之后移到之前（按已填充数量释放），循环中途
+  `print` 失败时前几条名字不再泄漏。
+
+### 加固：第二批（结构体字面量里的多字段分配）
+
+- `core.KafkaConnector.parseJoinGroupResponse`：**原 `errdefer` 会释放未初始化的
+  `list` 元素**——`for (list) |m| free(m.member_id)` 覆盖整条 slice，循环中途返回
+  （畸形响应或 OOM）时把未写入的槽位当指针 free，属于比泄漏更严重的无效释放。改为按已填充
+  数量释放，并给每个成员的两次 `dupe` 加守卫；返回字段（protocol / leader / member）与
+  members 数组同样逐个 `errdefer`。
+- `security.DependencyScanner.addVulnerability`：4 个必填字符串 + 可选 `fix_version`
+  改为逐字段 `errdefer`；`put` 失败时不再丢整条记录。
+- `security.SecurityScanner.scanSourceCode`：finding 的 `message` / `file_path` 加守卫，
+  `append` 失败不再漏。
+- `tracing.OtlpExporter.init` / `tracing.DistributedTracer.init`：两字段逐个守卫。
+- `extensions.GrpcTransport`：`OwnedGrpcResponse` 的 8 处字面量收口到
+  `ownedResponse()`（payload + message 两次 `dupe` 互相兜底）；`invoke` /
+  `invokeClientStream` 的每个早退分支都走它。
+- 新增 5 个 OOM 扫描（Kafka join-group、DependencyScanner、OtlpExporter.init、
+  DistributedTracer.init、Grpc `invoke`）；既有 `ProtoParser` / `ContractTest` 扫描继续覆盖
+  第一批。
+
 ## [0.43.3] - 2026-10-25
 
 ### 修复：gpt-6 带工具时 `reasoning_effort` 必须是字面量 `"none"`

@@ -32,6 +32,10 @@ const Capture = struct {
     fn record(allocator: std.mem.Allocator, ctx: *api.Context) void {
         template = ctx.route_template;
         path = ctx.path;
+        // A second dispatch overwrites the previous capture. Release it first —
+        // `template_owned` is its only handle, and `reset` can only free the
+        // last one.
+        if (template_owned) |t| allocator.free(t);
         template_owned = if (ctx.route_template) |t| allocator.dupe(u8, t) catch null else null;
         template = template_owned;
     }
@@ -58,6 +62,26 @@ test "route_template is filled for runtime-scope-registered routes" {
     try std.testing.expectEqualStrings("/orders/{id}", Capture.template.?);
     // The id is in `path` — exactly why the label must come from the template.
     try std.testing.expectEqualStrings("/orders/42", Capture.path);
+}
+
+test "Capture.record releases the previous dispatch's copy" {
+    const allocator = std.testing.allocator;
+    defer Capture.reset(allocator);
+
+    var server = api.Server.init(std.testing.io, allocator, 0);
+    defer server.deinit();
+    var group = RouteRegistrar.init(&server, "");
+    try group.get("orders/{id}", Capture.handler, null);
+
+    // Two dispatches into the same capture: the first copy is unreachable once
+    // `record` runs again, so a missing free shows up as a leak here.
+    for ([_][]const u8{ "/orders/1", "/orders/2" }) |path| {
+        var resp = try Testkit.dispatch(&server, .GET, path, null);
+        defer resp.deinit(allocator);
+        try std.testing.expectEqual(@as(u16, 200), resp.status_code);
+    }
+
+    try std.testing.expectEqualStrings("/orders/{id}", Capture.template.?);
 }
 
 test "route_template is filled for Server.addRoute (the /metrics shape)" {

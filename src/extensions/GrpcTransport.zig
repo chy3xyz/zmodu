@@ -554,23 +554,35 @@ pub const GrpcServiceRegistry = struct {
         return result.toOwnedSlice(self.allocator);
     }
 
+    /// Build a response whose payload and message are owned copies either way:
+    /// a failure on the second copy releases the first. Every early-return in
+    /// `invoke` / `invoke*Stream` goes through this, so none of them can hand a
+    /// half-allocated `OwnedGrpcResponse` (whose `deinit` would free garbage).
+    fn ownedResponse(
+        self: *Self,
+        status: GrpcStatusCode,
+        payload: []const u8,
+        message: []const u8,
+    ) !OwnedGrpcResponse {
+        const payload_copy = try self.allocator.dupe(u8, payload);
+        errdefer self.allocator.free(payload_copy);
+        const message_copy = try self.allocator.dupe(u8, message);
+        errdefer self.allocator.free(message_copy);
+        return .{
+            .payload = payload_copy,
+            .status = status,
+            .message = message_copy,
+            .allocator = self.allocator,
+        };
+    }
+
     /// In-process unary invoke (no framing). Streaming without stream handler → UNIMPLEMENTED.
     pub fn invoke(self: *Self, path: []const u8, payload: []const u8) !OwnedGrpcResponse {
         const found = self.findMethod(path) orelse {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .NOT_FOUND,
-                .message = try self.allocator.dupe(u8, "method not found"),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.NOT_FOUND, "", "method not found");
         };
         if (found.method.method_type != .unary or found.unary_handler == null) {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .UNIMPLEMENTED,
-                .message = try self.allocator.dupe(u8, "use invokeServerStream for streaming methods"),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.UNIMPLEMENTED, "", "use invokeServerStream for streaming methods");
         }
 
         var metadata = std.StringHashMap([]const u8).init(self.allocator);
@@ -582,19 +594,9 @@ pub const GrpcServiceRegistry = struct {
             .timeout_ms = 30_000,
         };
         const resp = found.unary_handler.?(req) catch |err| {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .INTERNAL,
-                .message = try self.allocator.dupe(u8, @errorName(err)),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.INTERNAL, "", @errorName(err));
         };
-        return OwnedGrpcResponse{
-            .payload = try self.allocator.dupe(u8, resp.payload),
-            .status = resp.status,
-            .message = try self.allocator.dupe(u8, resp.message),
-            .allocator = self.allocator,
-        };
+        return self.ownedResponse(resp.status, resp.payload, resp.message);
     }
 
     /// Drive a server-streaming handler into `writer`.
@@ -685,20 +687,10 @@ pub const GrpcServiceRegistry = struct {
 
     pub fn invokeClientStream(self: *Self, path: []const u8, framed_body: []const u8) !OwnedGrpcResponse {
         const found = self.findMethod(path) orelse {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .NOT_FOUND,
-                .message = try self.allocator.dupe(u8, "method not found"),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.NOT_FOUND, "", "method not found");
         };
         if (found.method.method_type != .client_streaming or found.client_stream_handler == null) {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .UNIMPLEMENTED,
-                .message = try self.allocator.dupe(u8, "client streaming handler not registered"),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.UNIMPLEMENTED, "", "client streaming handler not registered");
         }
         var reader = GrpcStreamReader.init(self.allocator, framed_body);
         var metadata = std.StringHashMap([]const u8).init(self.allocator);
@@ -710,19 +702,9 @@ pub const GrpcServiceRegistry = struct {
             .timeout_ms = 30_000,
         };
         const resp = found.client_stream_handler.?(req, &reader) catch |err| {
-            return OwnedGrpcResponse{
-                .payload = try self.allocator.dupe(u8, ""),
-                .status = .INTERNAL,
-                .message = try self.allocator.dupe(u8, @errorName(err)),
-                .allocator = self.allocator,
-            };
+            return self.ownedResponse(.INTERNAL, "", @errorName(err));
         };
-        return OwnedGrpcResponse{
-            .payload = try self.allocator.dupe(u8, resp.payload),
-            .status = resp.status,
-            .message = try self.allocator.dupe(u8, resp.message),
-            .allocator = self.allocator,
-        };
+        return self.ownedResponse(resp.status, resp.payload, resp.message);
     }
 
     pub fn invokeBidi(self: *Self, path: []const u8, framed_body: []const u8, writer: *GrpcStreamWriter) !void {
@@ -918,17 +900,83 @@ pub const ProtoParser = struct {
         is_streaming: bool = false,
     };
 
+    /// Release a parse result and everything inside it.
+    pub fn deinitServices(allocator: std.mem.Allocator, services: []const ProtoService) void {
+        for (services) |svc| {
+            allocator.free(svc.name);
+            deinitMethods(allocator, svc.methods);
+        }
+        allocator.free(services);
+    }
+
+    /// Release a methods array plus the strings each method owns.
+    fn deinitMethods(allocator: std.mem.Allocator, methods: []const ProtoMethod) void {
+        for (methods) |m| {
+            allocator.free(m.name);
+            allocator.free(m.input_type);
+            allocator.free(m.output_type);
+        }
+        allocator.free(methods);
+    }
+
+    /// Append one method, owning its three copies: a failure part-way through
+    /// the literal (or in the append itself) releases what was already copied.
+    fn appendMethod(
+        list: *std.ArrayList(ProtoMethod),
+        allocator: std.mem.Allocator,
+        name: []const u8,
+        input_type: []const u8,
+        output_type: []const u8,
+        is_streaming: bool,
+    ) !void {
+        const name_copy = try allocator.dupe(u8, name);
+        errdefer allocator.free(name_copy);
+        const input_copy = try allocator.dupe(u8, input_type);
+        errdefer allocator.free(input_copy);
+        const output_copy = try allocator.dupe(u8, output_type);
+        errdefer allocator.free(output_copy);
+
+        try list.append(allocator, .{
+            .name = name_copy,
+            .input_type = input_copy,
+            .output_type = output_copy,
+            .is_streaming = is_streaming,
+        });
+    }
+
     pub fn parse(allocator: std.mem.Allocator, content: []const u8) ![]const ProtoService {
         var services = std.ArrayList(ProtoService).empty;
+        // A parse that fails half-way hands nothing back, so every owner built
+        // here needs a guard: the finished services, the service being parsed
+        // and its methods.
+        errdefer {
+            for (services.items) |svc| {
+                allocator.free(svc.name);
+                deinitMethods(allocator, svc.methods);
+            }
+            services.deinit(allocator);
+        }
         var lines = std.mem.splitScalar(u8, content, '\n');
         var current_service: ?[]const u8 = null;
+        errdefer if (current_service) |svc| allocator.free(svc);
         var current_methods = std.ArrayList(ProtoMethod).empty;
+        errdefer {
+            for (current_methods.items) |m| {
+                allocator.free(m.name);
+                allocator.free(m.input_type);
+                allocator.free(m.output_type);
+            }
+            current_methods.deinit(allocator);
+        }
 
         while (lines.next()) |line| {
             const trimmed = std.mem.trim(u8, line, " \t\r;");
             if (std.mem.startsWith(u8, trimmed, "service ")) {
                 if (current_service) |svc| {
                     const methods = try current_methods.toOwnedSlice(allocator);
+                    // `toOwnedSlice` emptied the list, so this slice has no
+                    // guard of its own until `services` takes it.
+                    errdefer deinitMethods(allocator, methods);
                     try services.append(allocator, .{ .name = svc, .methods = methods });
                     current_methods = std.ArrayList(ProtoMethod).empty;
                     current_service = null;
@@ -953,17 +1001,14 @@ pub const ProtoParser = struct {
                 const out_stream = std.mem.startsWith(u8, out_trim, "stream ");
                 const input_type = if (in_stream) std.mem.trim(u8, in_trim["stream ".len..], " \t") else in_trim;
                 const output_type = if (out_stream) std.mem.trim(u8, out_trim["stream ".len..], " \t") else out_trim;
-                try current_methods.append(allocator, .{
-                    .name = try allocator.dupe(u8, method_name),
-                    .input_type = try allocator.dupe(u8, input_type),
-                    .output_type = try allocator.dupe(u8, output_type),
-                    .is_streaming = in_stream or out_stream,
-                });
+                try appendMethod(&current_methods, allocator, method_name, input_type, output_type, in_stream or out_stream);
             }
         }
         if (current_service) |svc| {
             const methods = try current_methods.toOwnedSlice(allocator);
+            errdefer deinitMethods(allocator, methods);
             try services.append(allocator, .{ .name = svc, .methods = methods });
+            current_service = null;
         }
         return services.toOwnedSlice(allocator);
     }
@@ -1221,23 +1266,25 @@ test "ProtoParser basic" {
     ;
 
     const services = try ProtoParser.parse(allocator, proto_content);
-    defer {
-        for (services) |svc| {
-            allocator.free(svc.name);
-            for (svc.methods) |m| {
-                allocator.free(m.name);
-                allocator.free(m.input_type);
-                allocator.free(m.output_type);
-            }
-            allocator.free(svc.methods);
-        }
-        allocator.free(services);
-    }
+    defer ProtoParser.deinitServices(allocator, services);
 
     try std.testing.expectEqual(@as(usize, 2), services.len);
     try std.testing.expectEqualStrings("OrderService", services[0].name);
     try std.testing.expectEqual(@as(usize, 2), services[0].methods.len);
     try std.testing.expectEqualStrings("PaymentService", services[1].name);
+}
+
+test "GrpcServiceRegistry.invoke releases the response when a copy fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var registry = GrpcServiceRegistry.init(a);
+            defer registry.deinit();
+            // Unknown method: the NOT_FOUND response still allocates two copies.
+            var res = try registry.invoke("nope.Service/Method", "");
+            res.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
 }
 
 test "GrpcClient local call" {
@@ -1410,18 +1457,29 @@ test "ProtoParser detects stream keyword" {
         \\}
     ;
     const services = try ProtoParser.parse(allocator, proto);
-    defer {
-        for (services) |svc| {
-            allocator.free(svc.name);
-            for (svc.methods) |m| {
-                allocator.free(m.name);
-                allocator.free(m.input_type);
-                allocator.free(m.output_type);
-            }
-            allocator.free(svc.methods);
-        }
-        allocator.free(services);
-    }
+    defer ProtoParser.deinitServices(allocator, services);
     try std.testing.expect(services[0].methods[0].is_streaming);
     try std.testing.expectEqualStrings("Event", services[0].methods[0].output_type);
+}
+
+test "ProtoParser.parse releases everything when an allocation fails" {
+    const proto =
+        \\service OrderService {
+        \\  rpc CreateOrder(CreateOrderRequest) returns (CreateOrderResponse);
+        \\  rpc GetOrder(GetOrderRequest) returns (Order);
+        \\}
+        \\
+        \\service PaymentService {
+        \\  rpc ProcessPayment(PaymentRequest) returns (PaymentResponse);
+        \\}
+    ;
+    const Scan = struct {
+        fn run(a: std.mem.Allocator, content: []const u8) !void {
+            const services = try ProtoParser.parse(a, content);
+            ProtoParser.deinitServices(a, services);
+        }
+    };
+    // Partial state is the whole point: services, the in-progress service and
+    // its methods each own strings when a later allocation fails.
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{proto});
 }

@@ -726,6 +726,14 @@ pub const MigrationLoader = struct {
     ///           -- description: xxx
     /// -- rollback: ... (optional)
     ///           SQL statements...
+    ///
+    /// The returned slices are owned by `allocator`; the caller frees
+    /// `description`, `sql` and (when set) `rollback_sql`.
+    ///
+    /// Both header markers are last-wins: a repeated `-- description:` or
+    /// `-- rollback:` replaces the previous value, releasing it first (the
+    /// caller only ever sees the returned slice, so an overwritten pointer
+    /// would be unreachable memory).
     pub fn parseMigrationFile(allocator: std.mem.Allocator, content: []const u8) !struct {
         version: i64,
         description: []const u8,
@@ -736,6 +744,12 @@ pub const MigrationLoader = struct {
         var description: ?[]const u8 = null;
         var sql_start: usize = 0;
         var rollback_sql: ?[]const u8 = null;
+
+        // Every partial allocation is guarded: a parse that fails on line N (or
+        // on an OOM in `dupe`) hands nothing back, so anything already built
+        // here has no other owner.
+        errdefer if (description) |d| allocator.free(d);
+        errdefer if (rollback_sql) |r| allocator.free(r);
 
         var lines = std.mem.splitScalar(u8, content, '\n');
         var line_no: usize = 0;
@@ -749,9 +763,13 @@ pub const MigrationLoader = struct {
                 };
             } else if (std.mem.startsWith(u8, trimmed, "-- description:")) {
                 const desc = std.mem.trim(u8, trimmed["-- description:".len..], " \t");
+                // Release before replacing: the field is the only handle on the
+                // previous copy, and the caller never sees it.
+                if (description) |old| allocator.free(old);
                 description = try allocator.dupe(u8, desc);
             } else if (std.mem.startsWith(u8, trimmed, "-- rollback:")) {
                 const rb = std.mem.trim(u8, trimmed["-- rollback:".len..], " \t");
+                if (rollback_sql) |old| allocator.free(old);
                 rollback_sql = try allocator.dupe(u8, rb);
             } else if (!std.mem.startsWith(u8, trimmed, "--") and trimmed.len > 0) {
                 if (sql_start == 0) {
@@ -761,8 +779,6 @@ pub const MigrationLoader = struct {
         }
 
         if (version == null or description == null or sql_start == 0) {
-            if (description) |d| allocator.free(d);
-            if (rollback_sql) |r| allocator.free(r);
             return error.InvalidMigrationFormat;
         }
 
@@ -778,10 +794,13 @@ pub const MigrationLoader = struct {
             }
         }
 
+        const sql = try sql_buf.toOwnedSlice(allocator);
+        errdefer allocator.free(sql);
+
         return .{
             .version = version.?,
             .description = description.?,
-            .sql = try sql_buf.toOwnedSlice(allocator),
+            .sql = sql,
             .rollback_sql = rollback_sql,
         };
     }
@@ -984,6 +1003,50 @@ test "MigrationLoader parse migration file content" {
     try std.testing.expectEqualStrings("Create users table", result.description);
     try std.testing.expect(std.mem.containsAtLeast(u8, result.sql, 1, "CREATE TABLE"));
     try std.testing.expectEqualStrings("DROP TABLE users;", result.rollback_sql.?);
+}
+
+test "MigrationLoader replaces repeated header markers without leaking the replaced copies" {
+    // Not an arena: the replaced `dupe`s are unreachable from the return value,
+    // so a missing free shows up here as a leak — this is the regression test
+    // for a 3-rollback file, which used to leak two allocations per parse.
+    const allocator = std.testing.allocator;
+    const content =
+        \\-- version: 20260916030000
+        \\-- description: first pass
+        \\-- description: Task points
+        \\-- rollback: DELETE FROM task_points WHERE source = 'a';
+        \\-- rollback: DELETE FROM task_points WHERE source = 'b';
+        \\-- rollback: UPDATE task_points SET points = 0;
+        \\CREATE TABLE task_points (id BIGINT PRIMARY KEY);
+    ;
+    const result = try MigrationLoader.parseMigrationFile(allocator, content);
+    defer {
+        allocator.free(result.description);
+        allocator.free(result.sql);
+        if (result.rollback_sql) |r| allocator.free(r);
+    }
+
+    // Last-wins, for both markers.
+    try std.testing.expectEqualStrings("Task points", result.description);
+    try std.testing.expectEqualStrings("UPDATE task_points SET points = 0;", result.rollback_sql.?);
+}
+
+test "MigrationLoader.parseMigrationFile frees every partial allocation (OOM scan)" {
+    const content =
+        \\-- version: 20260916030000
+        \\-- description: Task points
+        \\-- rollback: DROP TABLE task_points;
+        \\CREATE TABLE task_points (id BIGINT PRIMARY KEY);
+    ;
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            const result = try MigrationLoader.parseMigrationFile(a, content);
+            a.free(result.description);
+            a.free(result.sql);
+            if (result.rollback_sql) |r| a.free(r);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
 }
 
 test "splitSqlStatements handles quotes, comments and dollar quotes" {

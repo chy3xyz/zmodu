@@ -2243,8 +2243,13 @@ pub const KafkaWireFormat = struct {
             off += 4;
             if (count > 0) {
                 var list = try allocator.alloc(JoinGroupMember, @intCast(count));
+                // `list` is uninitialized until an entry is written, so the
+                // guard must run over the filled prefix only — freeing the whole
+                // slice hands garbage pointers to the allocator when a malformed
+                // response (or an OOM) aborts the loop.
+                var filled: usize = 0;
                 errdefer {
-                    for (list) |m| {
+                    for (list[0..filled]) |m| {
                         allocator.free(m.member_id);
                         allocator.free(m.metadata);
                     }
@@ -2256,18 +2261,20 @@ pub const KafkaWireFormat = struct {
                     if (off + 4 > resp.len) return error.InvalidResponse;
                     const meta_len = readI32(resp[off..][0..4]);
                     off += 4;
+                    const member_name = try allocator.dupe(u8, mid);
+                    errdefer allocator.free(member_name);
                     if (meta_len < 0) {
                         list[i] = .{
-                            .member_id = try allocator.dupe(u8, mid),
+                            .member_id = member_name,
                             .metadata = try allocator.alloc(u8, 0),
                         };
+                        filled += 1;
                         continue;
                     }
                     if (off + @as(usize, @intCast(meta_len)) > resp.len) return error.InvalidResponse;
-                    list[i] = .{
-                        .member_id = try allocator.dupe(u8, mid),
-                        .metadata = try allocator.dupe(u8, resp[off .. off + @as(usize, @intCast(meta_len))]),
-                    };
+                    const metadata = try allocator.dupe(u8, resp[off .. off + @as(usize, @intCast(meta_len))]);
+                    list[i] = .{ .member_id = member_name, .metadata = metadata };
+                    filled += 1;
                     off += @intCast(meta_len);
                 }
                 members = list;
@@ -2278,12 +2285,28 @@ pub const KafkaWireFormat = struct {
             members = try allocator.alloc(JoinGroupMember, 0);
         }
 
+        // Every field of the result owns memory, so a failure between them (or
+        // an append of the members slice) has to release the earlier ones.
+        errdefer {
+            for (members) |m| {
+                allocator.free(m.member_id);
+                allocator.free(m.metadata);
+            }
+            allocator.free(members);
+        }
+        const protocol_copy = try allocator.dupe(u8, protocol);
+        errdefer allocator.free(protocol_copy);
+        const leader_copy = try allocator.dupe(u8, leader_id);
+        errdefer allocator.free(leader_copy);
+        const member_copy = try allocator.dupe(u8, member_id);
+        errdefer allocator.free(member_copy);
+
         return .{
             .error_code = error_code,
             .generation_id = generation_id,
-            .protocol = try allocator.dupe(u8, protocol),
-            .leader_id = try allocator.dupe(u8, leader_id),
-            .member_id = try allocator.dupe(u8, member_id),
+            .protocol = protocol_copy,
+            .leader_id = leader_copy,
+            .member_id = member_copy,
             .members = members,
         };
     }
@@ -2922,6 +2945,58 @@ test "KafkaWireFormat parseJoinGroupResponse synthetic" {
     try std.testing.expectEqual(@as(i16, 0), parsed.error_code);
     try std.testing.expectEqual(@as(i32, 7), parsed.generation_id);
     try std.testing.expectEqualStrings("member", parsed.member_id);
+}
+
+test "parseJoinGroupResponse releases partial state when an allocation fails" {
+    const allocator = std.testing.allocator;
+    // Two members, so the loop's per-entry copies and the filled prefix (not
+    // the whole uninitialized slice) are both exercised.
+    var buf = std.ArrayList(u8).empty;
+    defer buf.deinit(allocator);
+    var b4: [4]u8 = undefined;
+    var b2: [2]u8 = undefined;
+    writeI32(&b4, 42);
+    try buf.appendSlice(allocator, &b4); // corr
+    writeI32(&b4, 0);
+    try buf.appendSlice(allocator, &b4); // throttle
+    writeI16(&b2, 0);
+    try buf.appendSlice(allocator, &b2); // error
+    writeI32(&b4, 7);
+    try buf.appendSlice(allocator, &b4); // generation
+    writeI16(&b2, 5);
+    try buf.appendSlice(allocator, &b2);
+    try buf.appendSlice(allocator, "range");
+    writeI16(&b2, 6);
+    try buf.appendSlice(allocator, &b2);
+    try buf.appendSlice(allocator, "leader");
+    writeI16(&b2, 6);
+    try buf.appendSlice(allocator, &b2);
+    try buf.appendSlice(allocator, "member");
+    writeI32(&b4, 2);
+    try buf.appendSlice(allocator, &b4); // members count
+    for ([_][]const u8{ "m1", "m2" }) |id| {
+        writeI16(&b2, @intCast(id.len));
+        try buf.appendSlice(allocator, &b2);
+        try buf.appendSlice(allocator, id);
+        writeI32(&b4, 1);
+        try buf.appendSlice(allocator, &b4); // metadata length
+        try buf.appendSlice(allocator, "x");
+    }
+
+    const Scan = struct {
+        fn run(a: std.mem.Allocator, bytes: []const u8) !void {
+            const parsed = try KafkaWireFormat.parseJoinGroupResponse(a, bytes, 42);
+            a.free(parsed.protocol);
+            a.free(parsed.leader_id);
+            a.free(parsed.member_id);
+            for (parsed.members) |m| {
+                a.free(m.member_id);
+                a.free(m.metadata);
+            }
+            a.free(parsed.members);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{buf.items});
 }
 
 test "RangeAssignor divides partitions across members" {

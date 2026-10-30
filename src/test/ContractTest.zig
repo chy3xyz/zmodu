@@ -91,46 +91,104 @@ pub const ContractTestRunner = struct {
     }
 
     pub fn deinit(self: *Self) void {
-        for (self.contracts.items) |c| {
-            self.allocator.free(c.name);
-            self.allocator.free(c.consumer);
-            self.allocator.free(c.provider);
-            self.allocator.free(c.version);
-            self.allocator.free(c.request.method);
-            self.allocator.free(c.request.path);
-            for (c.request.headers) |h| {
-                self.allocator.free(h.key);
-                self.allocator.free(h.value);
-            }
-            self.allocator.free(c.request.headers);
-            if (c.request.body) |b| self.allocator.free(b);
-            for (c.response.headers) |h| {
-                self.allocator.free(h.key);
-                self.allocator.free(h.value);
-            }
-            self.allocator.free(c.response.headers);
-            if (c.response.body_contains) |bc| self.allocator.free(bc);
-            if (c.response.body_schema) |bs| self.allocator.free(bs);
-        }
+        for (self.contracts.items) |c| freeContract(self.allocator, c);
         self.contracts.deinit(self.allocator);
 
         for (self.verifications.items) |v| {
             self.allocator.free(v.contract_name);
-            for (v.failures) |f| {
-                self.allocator.free(f.field);
-                self.allocator.free(f.expected);
-                self.allocator.free(f.actual);
-                self.allocator.free(f.message);
-            }
+            for (v.failures) |f| freeFailure(self.allocator, f);
             self.allocator.free(v.failures);
         }
         self.verifications.deinit(self.allocator);
         self.* = undefined;
     }
 
+    /// Release one failure record.
+    fn freeFailure(allocator: std.mem.Allocator, f: ContractVerificationResult.ContractFailure) void {
+        allocator.free(f.field);
+        allocator.free(f.expected);
+        allocator.free(f.actual);
+        allocator.free(f.message);
+    }
+
+    /// Copy the four strings and append the record. A failure part-way through
+    /// the copies — or in the append — releases what was already copied: the
+    /// caller only ever sees the returned list's contents.
+    fn appendFailure(
+        list: *std.ArrayList(ContractVerificationResult.ContractFailure),
+        allocator: std.mem.Allocator,
+        field: []const u8,
+        expected: []const u8,
+        actual: []const u8,
+        message: []const u8,
+    ) !void {
+        const field_copy = try allocator.dupe(u8, field);
+        errdefer allocator.free(field_copy);
+        const expected_copy = try allocator.dupe(u8, expected);
+        errdefer allocator.free(expected_copy);
+        const actual_copy = try allocator.dupe(u8, actual);
+        errdefer allocator.free(actual_copy);
+        const message_copy = try allocator.dupe(u8, message);
+        errdefer allocator.free(message_copy);
+
+        try list.append(allocator, .{
+            .field = field_copy,
+            .expected = expected_copy,
+            .actual = actual_copy,
+            .message = message_copy,
+        });
+    }
+
+    /// Copy a header matcher list, releasing the partially built array (and the
+    /// pairs already in it) when an allocation fails.
+    fn cloneHeaders(allocator: std.mem.Allocator, headers: []const Contract.HeaderMatcher) ![]const Contract.HeaderMatcher {
+        const copy = try allocator.alloc(Contract.HeaderMatcher, headers.len);
+        var filled: usize = 0;
+        errdefer {
+            for (copy[0..filled]) |h| {
+                allocator.free(h.key);
+                allocator.free(h.value);
+            }
+            allocator.free(copy);
+        }
+        for (headers, 0..) |h, i| {
+            const key = try allocator.dupe(u8, h.key);
+            errdefer allocator.free(key);
+            const value = try allocator.dupe(u8, h.value);
+            copy[i] = .{ .key = key, .value = value };
+            filled += 1;
+        }
+        return copy;
+    }
+
+    fn freeHeaders(allocator: std.mem.Allocator, headers: []const Contract.HeaderMatcher) void {
+        for (headers) |h| {
+            allocator.free(h.key);
+            allocator.free(h.value);
+        }
+        allocator.free(headers);
+    }
+
+    /// Release a contract this runner owns (used by `deinit` and by the
+    /// register path when the append fails).
+    fn freeContract(allocator: std.mem.Allocator, c: Contract) void {
+        allocator.free(c.name);
+        allocator.free(c.consumer);
+        allocator.free(c.provider);
+        allocator.free(c.version);
+        allocator.free(c.request.method);
+        allocator.free(c.request.path);
+        freeHeaders(allocator, c.request.headers);
+        if (c.request.body) |b| allocator.free(b);
+        freeHeaders(allocator, c.response.headers);
+        if (c.response.body_contains) |bc| allocator.free(bc);
+        if (c.response.body_schema) |bs| allocator.free(bs);
+    }
+
     /// Register a contract
     pub fn registerContract(self: *Self, contract: Contract) !void {
         const owned = try self.cloneContract(contract);
+        errdefer freeContract(self.allocator, owned);
         try self.contracts.append(self.allocator, owned);
     }
 
@@ -145,27 +203,27 @@ pub const ContractTestRunner = struct {
         const contract = self.findContract(contract_name) orelse return error.ContractNotFound;
 
         var failures = std.ArrayList(ContractVerificationResult.ContractFailure).empty;
+        // Every record already appended owns four strings; an error further
+        // down (a later copy, the final slice) must not strand them.
+        errdefer {
+            for (failures.items) |f| freeFailure(self.allocator, f);
+            failures.deinit(self.allocator);
+        }
         const start = @import("../core/Time.zig").monotonicNowSeconds();
 
         // Validate the status code
         if (actual_status != contract.response.status) {
-            try failures.append(self.allocator, .{
-                .field = try self.allocator.dupe(u8, "status"),
-                .expected = try self.allocator.print("{d}", .{contract.response.status}),
-                .actual = try self.allocator.print("{d}", .{actual_status}),
-                .message = try self.allocator.dupe(u8, "HTTP status mismatch"),
-            });
+            const expected = try self.allocator.print("{d}", .{contract.response.status});
+            defer self.allocator.free(expected);
+            const actual = try self.allocator.print("{d}", .{actual_status});
+            defer self.allocator.free(actual);
+            try appendFailure(&failures, self.allocator, "status", expected, actual, "HTTP status mismatch");
         }
 
         // Validate that the response body contains the expected string
         if (contract.response.body_contains) |expected| {
             if (!std.mem.containsAtLeast(u8, actual_body, 1, expected)) {
-                try failures.append(self.allocator, .{
-                    .field = try self.allocator.dupe(u8, "body"),
-                    .expected = try self.allocator.dupe(u8, expected),
-                    .actual = try self.allocator.dupe(u8, actual_body),
-                    .message = try self.allocator.dupe(u8, "Response body does not contain expected string"),
-                });
+                try appendFailure(&failures, self.allocator, "body", expected, actual_body, "Response body does not contain expected string");
             }
         }
 
@@ -175,24 +233,18 @@ pub const ContractTestRunner = struct {
             for (actual_headers) |actual_header| {
                 if (std.mem.eql(u8, expected_header.key, actual_header.key)) {
                     if (!std.mem.eql(u8, expected_header.value, actual_header.value)) {
-                        try failures.append(self.allocator, .{
-                            .field = try self.allocator.print("header.{s}", .{expected_header.key}),
-                            .expected = try self.allocator.dupe(u8, expected_header.value),
-                            .actual = try self.allocator.dupe(u8, actual_header.value),
-                            .message = try self.allocator.dupe(u8, "Response header value mismatch"),
-                        });
+                        const field = try self.allocator.print("header.{s}", .{expected_header.key});
+                        defer self.allocator.free(field);
+                        try appendFailure(&failures, self.allocator, field, expected_header.value, actual_header.value, "Response header value mismatch");
                     }
                     found = true;
                     break;
                 }
             }
             if (!found) {
-                try failures.append(self.allocator, .{
-                    .field = try self.allocator.print("header.{s}", .{expected_header.key}),
-                    .expected = try self.allocator.dupe(u8, expected_header.value),
-                    .actual = try self.allocator.dupe(u8, "<missing>"),
-                    .message = try self.allocator.dupe(u8, "Expected response header not found"),
-                });
+                const field = try self.allocator.print("header.{s}", .{expected_header.key});
+                defer self.allocator.free(field);
+                try appendFailure(&failures, self.allocator, field, expected_header.value, "<missing>", "Expected response header not found");
             }
         }
 
@@ -200,8 +252,10 @@ pub const ContractTestRunner = struct {
         const duration = @as(u64, @intCast((end - start) * 1000));
         const passed = failures.items.len == 0;
 
+        const contract_name_copy = try self.allocator.dupe(u8, contract_name);
+        errdefer self.allocator.free(contract_name_copy);
         return ContractVerificationResult{
-            .contract_name = try self.allocator.dupe(u8, contract_name),
+            .contract_name = contract_name_copy,
             .passed = passed,
             .failures = try failures.toOwnedSlice(self.allocator),
             .duration_ms = duration,
@@ -263,40 +317,46 @@ pub const ContractTestRunner = struct {
     fn cloneContract(self: *Self, c: Contract) !Contract {
         const name_copy = try self.allocator.dupe(u8, c.name);
         errdefer self.allocator.free(name_copy);
+        const consumer = try self.allocator.dupe(u8, c.consumer);
+        errdefer self.allocator.free(consumer);
+        const provider = try self.allocator.dupe(u8, c.provider);
+        errdefer self.allocator.free(provider);
+        const version = try self.allocator.dupe(u8, c.version);
+        errdefer self.allocator.free(version);
 
-        var req_headers_copy = try self.allocator.alloc(Contract.HeaderMatcher, c.request.headers.len);
-        for (c.request.headers, 0..) |h, i| {
-            req_headers_copy[i] = .{
-                .key = try self.allocator.dupe(u8, h.key),
-                .value = try self.allocator.dupe(u8, h.value),
-            };
-        }
+        const req_headers_copy = try cloneHeaders(self.allocator, c.request.headers);
+        errdefer freeHeaders(self.allocator, req_headers_copy);
+        const resp_headers_copy = try cloneHeaders(self.allocator, c.response.headers);
+        errdefer freeHeaders(self.allocator, resp_headers_copy);
 
-        var resp_headers_copy = try self.allocator.alloc(Contract.HeaderMatcher, c.response.headers.len);
-        for (c.response.headers, 0..) |h, i| {
-            resp_headers_copy[i] = .{
-                .key = try self.allocator.dupe(u8, h.key),
-                .value = try self.allocator.dupe(u8, h.value),
-            };
-        }
+        const method = try self.allocator.dupe(u8, c.request.method);
+        errdefer self.allocator.free(method);
+        const path = try self.allocator.dupe(u8, c.request.path);
+        errdefer self.allocator.free(path);
+        const body: ?[]const u8 = if (c.request.body) |b| try self.allocator.dupe(u8, b) else null;
+        errdefer if (body) |b| self.allocator.free(b);
+        const body_contains: ?[]const u8 = if (c.response.body_contains) |bc| try self.allocator.dupe(u8, bc) else null;
+        errdefer if (body_contains) |bc| self.allocator.free(bc);
+        const body_schema: ?[]const u8 = if (c.response.body_schema) |bs| try self.allocator.dupe(u8, bs) else null;
+        errdefer if (body_schema) |bs| self.allocator.free(bs);
 
         return Contract{
             .name = name_copy,
-            .consumer = try self.allocator.dupe(u8, c.consumer),
-            .provider = try self.allocator.dupe(u8, c.provider),
-            .version = try self.allocator.dupe(u8, c.version),
+            .consumer = consumer,
+            .provider = provider,
+            .version = version,
             .interaction_type = c.interaction_type,
             .request = .{
-                .method = try self.allocator.dupe(u8, c.request.method),
-                .path = try self.allocator.dupe(u8, c.request.path),
+                .method = method,
+                .path = path,
                 .headers = req_headers_copy,
-                .body = if (c.request.body) |b| try self.allocator.dupe(u8, b) else null,
+                .body = body,
             },
             .response = .{
                 .status = c.response.status,
                 .headers = resp_headers_copy,
-                .body_contains = if (c.response.body_contains) |bc| try self.allocator.dupe(u8, bc) else null,
-                .body_schema = if (c.response.body_schema) |bs| try self.allocator.dupe(u8, bs) else null,
+                .body_contains = body_contains,
+                .body_schema = body_schema,
             },
         };
     }
@@ -305,6 +365,62 @@ pub const ContractTestRunner = struct {
 // ─────────────────────────────────────────────────
 // Tests
 // ─────────────────────────────────────────────────
+
+test "ContractTestRunner.registerContract releases everything when an allocation fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var runner = ContractTestRunner.init(a);
+            defer runner.deinit();
+            try runner.registerContract(.{
+                .name = "order-create",
+                .consumer = "order-service",
+                .provider = "payment-service",
+                .version = "1.0",
+                .interaction_type = .http,
+                .request = .{
+                    .method = "POST",
+                    .path = "/api/payments",
+                    .headers = &.{.{ .key = "content-type", .value = "application/json" }},
+                    .body = "{\"amount\":1}",
+                },
+                .response = .{
+                    .status = 201,
+                    .headers = &.{.{ .key = "location", .value = "/api/payments/1" }},
+                    .body_contains = "paid",
+                    .body_schema = "payment",
+                },
+            });
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
+}
+
+test "ContractTestRunner.verifyContract releases failures when an allocation fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var runner = ContractTestRunner.init(a);
+            defer runner.deinit();
+            try runner.registerContract(.{
+                .name = "c",
+                .consumer = "a",
+                .provider = "b",
+                .version = "1",
+                .interaction_type = .http,
+                .request = .{ .method = "GET", .path = "/x" },
+                .response = .{
+                    .status = 201,
+                    .headers = &.{.{ .key = "x-trace", .value = "t1" }},
+                    .body_contains = "ok",
+                },
+            });
+            // Status + body + missing-header failures: three records, so a
+            // failure while building the third must release the first two.
+            var result = try runner.verifyContract("c", 200, "nope", &.{});
+            result.deinit(a);
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
+}
 
 test "ContractTestRunner register and verify pass" {
     const allocator = std.testing.allocator;

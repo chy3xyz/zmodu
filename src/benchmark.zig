@@ -1306,13 +1306,17 @@ fn benchWorkflow(allocator: std.mem.Allocator, io: std.Io, steps_count: usize, i
     });
     const steps = try allocator.alloc(zmodu.ai.workflow.Step, steps_count);
     defer allocator.free(steps);
+    var built: usize = 0;
+    // Registered before the loop: when a later `print` fails, the names already
+    // stored are still owed a free.
+    defer for (steps[0..built]) |s| allocator.free(s.name);
     for (0..steps_count) |i| {
         steps[i] = .{
             .name = try allocator.print("step-{d}", .{i}),
             .kind = .{ .skill = .{ .name = "nop", .args = .{ .object = .{} } } },
         };
+        built += 1;
     }
-    defer for (steps) |s| allocator.free(s.name);
     var wf = zmodu.ai.workflow.Workflow.init(&registry, steps);
     // Steps and registry above are setup state and stay on the caller's arena;
     // what a single `run` allocates — step records, plus the skill's own result
@@ -1679,13 +1683,17 @@ fn allocWorkflow(io: std.Io, steps_count: usize, iterations: usize) !AllocReadin
     });
     const steps = try allocator.alloc(zmodu.ai.workflow.Step, steps_count);
     defer allocator.free(steps);
+    var built: usize = 0;
+    // Registered before the loop: when a later `print` fails, the names already
+    // stored are still owed a free.
+    defer for (steps[0..built]) |s| allocator.free(s.name);
     for (0..steps_count) |i| {
         steps[i] = .{
             .name = try allocator.print("step-{d}", .{i}),
             .kind = .{ .skill = .{ .name = "nop", .args = .{ .object = .{} } } },
         };
+        built += 1;
     }
-    defer for (steps) |s| allocator.free(s.name);
     var wf = zmodu.ai.workflow.Workflow.init(&registry, steps);
     // Unlike `benchWorkflow` (fixture on the caller's arena, per-run records on
     // `harness_allocator`), the mirror runs everything through the counter: the

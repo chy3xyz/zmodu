@@ -129,10 +129,14 @@ pub const DistributedTracer = struct {
     };
 
     pub fn init(allocator: std.mem.Allocator, tracer_name: []const u8, service_name: []const u8) !Self {
+        const tracer_copy = try allocator.dupe(u8, tracer_name);
+        errdefer allocator.free(tracer_copy);
+        const service_copy = try allocator.dupe(u8, service_name);
+        errdefer allocator.free(service_copy);
         return .{
             .allocator = allocator,
-            .tracer_name = try allocator.dupe(u8, tracer_name),
-            .service_name = try allocator.dupe(u8, service_name),
+            .tracer_name = tracer_copy,
+            .service_name = service_copy,
             .active_spans = std.ArrayList(*Span).empty,
         };
     }
@@ -287,6 +291,16 @@ pub const Sampler = struct {
         }
     };
 };
+
+test "DistributedTracer.init releases the first copy when the second allocation fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var tracer = try DistributedTracer.init(a, "tracer", "svc");
+            tracer.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
+}
 
 test "DistributedTracer trace lifecycle" {
     const allocator = std.testing.allocator;

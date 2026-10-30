@@ -34,10 +34,14 @@ pub const OtlpExporter = struct {
     client: std.atomic.Value(?*HttpClient) = .init(null),
 
     pub fn init(allocator: std.mem.Allocator, service_name: []const u8, endpoint_url: []const u8) !Self {
+        const service_copy = try allocator.dupe(u8, service_name);
+        errdefer allocator.free(service_copy);
+        const endpoint_copy = try allocator.dupe(u8, endpoint_url);
+        errdefer allocator.free(endpoint_copy);
         return .{
             .allocator = allocator,
-            .service_name = try allocator.dupe(u8, service_name),
-            .endpoint_url = try allocator.dupe(u8, endpoint_url),
+            .service_name = service_copy,
+            .endpoint_url = endpoint_copy,
         };
     }
 
@@ -206,6 +210,16 @@ test "OtlpExporter JSON serialization" {
 
     try std.testing.expect(std.mem.containsAtLeast(u8, json, 1, "shop-service"));
     try std.testing.expect(std.mem.containsAtLeast(u8, json, 1, "GET /api/users"));
+}
+
+test "OtlpExporter.init releases the first copy when the second allocation fails" {
+    const Scan = struct {
+        fn run(a: std.mem.Allocator) !void {
+            var exporter = try OtlpExporter.init(a, "svc", "http://127.0.0.1:4318/v1/traces");
+            exporter.deinit();
+        }
+    };
+    try std.testing.checkAllAllocationFailures(std.testing.allocator, Scan.run, .{});
 }
 
 test "OtlpExporter isRetryableStatus" {
