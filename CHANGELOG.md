@@ -1,5 +1,35 @@
 # Changelog
 
+## [Unreleased]
+
+### 依赖：zent v0.97.1
+
+- 两个 zent 示例（`examples/zent-modulith`、`examples/metaverse-creative`）的 pin 从
+  v0.97.0 升到 **v0.97.1**。该版本把 outbox 的时钟读取改为 fail-closed（`clock_gettime`
+  失败返回 `error.ClockUnavailable`，不再写 `created_at = 0`），并让 SQLite 视图在
+  `view_sql` 变化时收敛；消费方 API 无变化。
+- 实测：`zent-modulith` smoke **44/0、无泄漏**；`metaverse-creative` `zig build demo` 报
+  `demo_ok`（先清 `.zig-cache` 再构建，避免沿用旧 fetch 模块）。
+- `docs/reference/ZENT.md` 版本口径与版本表同步（v0.97.1 行）。
+
+### 修复：PG / MySQL 数值列解码 panic，鉴权权限查询批量化
+
+- **sqlx PostgreSQL 零参数查询永远返回文本格式**：`execParamsDirect` 在 `args.len == 0`
+  时走 `PQexec`（简单查询协议），流式游标的 `PQsendQueryParams` 也把 `resultFormat` 传 0。
+  文本格式下所有列被解码为 `.string`，`row.get(...).?.int` 直接 panic
+  （"access of union field 'int' while field 'string' is active"）。现改为
+  `PQexecParams(..., PG_RESULT_BINARY)`，游标同样请求二进制。
+- **sqlx MySQL 缓冲读把所有值当字符串**：`mysqlReadRowsAfterQuery` 逐字段 `.string`，
+  新增按列类型解码的 `mysqlDecodeTextCell`（整型 / 浮点 / 文本），并修掉计算列
+  `field.name == null` 时的潜在崩溃。
+- 新增 `test.LiveDbDialect`（受 `ZMODU_TEST_PG=1`、`DB=mysql` 及 PG*/MYSQL_* 环境变量控制）：
+  PostgreSQL / MySQL 实机执行 `RunAuditStore`、`PersistentApprovalQueue`、`X402Store`、
+  `CatalogPermDb` 的建表 + 读写 + 聚合。**这组用例抓到了上面两条驱动级缺陷**——
+  此前的 DDL 字符串断言和 SQLite 行为测试都照不出来。
+- `CatalogPermDb.permissionsCsv`：每个角色一条 `SELECT` 改为一条 `IN (?,…)`（角色名仍是
+  绑定参数），消除鉴权热路径上每次 JWT 请求 N 次 DB round-trip；空角色列表提前返回，
+  不再生成非法的 `IN ()`。
+
 ## [0.43.4] - 2026-10-30
 
 ### 修复：迁移文件解析的重复标记泄漏

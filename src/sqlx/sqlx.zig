@@ -2509,7 +2509,10 @@ pub const PostgresConn = struct {
         if (args.len == 0) {
             const pg_sql_simple = try allocZ(self.allocator, sql_str);
             defer self.allocator.free(pg_sql_simple);
-            const res = libpq_c.PQexec(self.conn, @ptrCast(pg_sql_simple.ptr));
+            // `PQexec` (simple query protocol) always answers text, and text
+            // decodes every column as `.string` — a caller reading `.int`
+            // panics. Ask for binary, like the prepared paths below.
+            const res = libpq_c.PQexecParams(self.conn, @ptrCast(pg_sql_simple.ptr), 0, null, null, null, null, PG_RESULT_BINARY);
             if (res == null) {
                 std.log.err("PG PQexec returned null", .{});
                 return null;
@@ -2917,7 +2920,11 @@ pub const PostgresConn = struct {
             };
         }
 
-        if (libpq_c.PQsendQueryParams(self.conn, @ptrCast(sql_z.ptr), @intCast(args.len), null, @ptrCast(paramValues.ptr), @ptrCast(paramLengths.ptr), null, 0) == 0) {
+        // Binary results, like the prepared path (`PG_RESULT_BINARY`): the
+        // cursor's consumers read typed fields (`row.get(...).int`), and text
+        // format decodes every column as `.string`, which panics on the first
+        // integer read.
+        if (libpq_c.PQsendQueryParams(self.conn, @ptrCast(sql_z.ptr), @intCast(args.len), null, @ptrCast(paramValues.ptr), @ptrCast(paramLengths.ptr), null, 1) == 0) {
             return error.DatabaseError;
         }
         _ = libpq_c.PQsetSingleRowMode(self.conn);
@@ -3139,6 +3146,23 @@ fn formatQuery(allocator: std.mem.Allocator, sql: []const u8, args: []const Valu
 /// tests). They are here so a driver version that ever breaks that contract
 /// returns an error instead of dereferencing `lengths[c]` or inventing an
 /// all-NULL row.
+/// Decode one MySQL **text-protocol** cell using the column's declared type.
+///
+/// Text protocol hands every value back as bytes, and the old reader tagged all
+/// of them `.string` — so `COUNT(*)` / `SUM()` panicked with "access of union
+/// field 'int' while field 'string' is active" on the first integer read. The
+/// prepared-statement path (`mysqlStmtReadRows`) already decodes by type; this
+/// is the same rule for the buffered `mysql_real_query` path.
+fn mysqlDecodeTextCell(allocator: std.mem.Allocator, field_type: c_int, bytes: []const u8) !Value {
+    return switch (field_type) {
+        // TINY, SHORT, LONG, LONGLONG, INT24, YEAR, BIT
+        libmysql_c.MYSQL_TYPE_TINY, 2, libmysql_c.MYSQL_TYPE_LONG, libmysql_c.MYSQL_TYPE_LONGLONG, 9, 13, 16 => .{ .int = std.fmt.parseInt(i64, bytes, 10) catch 0 },
+        // DECIMAL, FLOAT, DOUBLE, NEWDECIMAL
+        0, 4, libmysql_c.MYSQL_TYPE_DOUBLE, 246 => .{ .float = std.fmt.parseFloat(f64, bytes) catch 0 },
+        else => .{ .string = try allocator.dupe(u8, bytes) },
+    };
+}
+
 fn mysqlReadRowsAfterQuery(mysql: ?*libmysql_c.MYSQL, arena: std.heap.ArenaAllocator) errors.ResultT(Rows) {
     var arena_mut = arena;
     // Taken **by value** on purpose here, but with the copy released on the error
@@ -3158,10 +3182,14 @@ fn mysqlReadRowsAfterQuery(mysql: ?*libmysql_c.MYSQL, arena: std.heap.ArenaAlloc
         const n_rows = libmysql_c.mysql_num_rows(r);
 
         const field_names = try arena_alloc.alloc([]const u8, n_cols);
+        const field_types = try arena_alloc.alloc(c_int, n_cols);
         for (0..n_cols) |c| {
             const field = libmysql_c.mysql_fetch_field(r) orelse return error.DatabaseError;
-            const name = std.mem.span(field.name);
+            // Computed columns (`COUNT(*)`, `SUM(...)`) may carry a null name
+            // on some MySQL builds; an empty name is fine for a by-index read.
+            const name = if (field.name == null) "" else std.mem.span(field.name);
             field_names[c] = try arena_alloc.dupe(u8, name);
+            field_types[c] = field.type;
         }
 
         var rows_list: std.ArrayList(Row) = std.ArrayList(Row).empty;
@@ -3184,7 +3212,7 @@ fn mysqlReadRowsAfterQuery(mysql: ?*libmysql_c.MYSQL, arena: std.heap.ArenaAlloc
                 } else {
                     const len = lengths[c];
                     const val = row_data[c].?[0..len];
-                    values[c] = .{ .string = try arena_alloc.dupe(u8, val) };
+                    values[c] = try mysqlDecodeTextCell(arena_alloc, field_types[c], val);
                 }
             }
             // Share field_names across rows (same arena lifetime).

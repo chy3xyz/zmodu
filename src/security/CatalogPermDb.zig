@@ -69,37 +69,52 @@ pub fn grant(client: *sqlx.Client, role: []const u8, permission: []const u8) !vo
 }
 
 /// Collect unique permission codes for JWT role names into an owned CSV.
+///
+/// One round trip for the whole role list, not one per role: this runs on every
+/// JWT-authenticated request, and a portal model with several roles turned a
+/// cache lookup into N database round trips per request. Role names still
+/// travel as bound parameters — an `IN (?,…)` list, never SQL text.
 pub fn permissionsCsv(allocator: std.mem.Allocator, client: *sqlx.Client, roles: []const []const u8) ![]u8 {
+    if (roles.len == 0) return try allocator.dupe(u8, "");
+
+    var sql_buf = std.ArrayList(u8).empty;
+    defer sql_buf.deinit(allocator);
+    try sql_buf.appendSlice(allocator, "SELECT permission FROM role_permission WHERE role_name IN (");
+    const args = try allocator.alloc(sqlx.Value, roles.len);
+    defer allocator.free(args);
+    for (roles, 0..) |role, i| {
+        if (i > 0) try sql_buf.append(allocator, ',');
+        try sql_buf.append(allocator, '?');
+        args[i] = .{ .string = role };
+    }
+    try sql_buf.append(allocator, ')');
+
+    var rows = try client.query(sql_buf.items, args);
+    defer rows.deinit();
+
     var list: std.ArrayList([]const u8) = .empty;
     defer {
         for (list.items) |p| allocator.free(p);
         list.deinit(allocator);
     }
 
-    for (roles) |role| {
-        var rows = try client.query(
-            "SELECT permission FROM role_permission WHERE role_name = ?",
-            &.{.{ .string = role }},
-        );
-        defer rows.deinit();
-        for (rows.rows) |*row| {
-            const v = row.get("permission") orelse continue;
-            const p = switch (v) {
-                .string => |s| s,
-                else => continue,
-            };
-            var dup = false;
-            for (list.items) |existing| {
-                if (std.mem.eql(u8, existing, p)) {
-                    dup = true;
-                    break;
-                }
+    for (rows.rows) |*row| {
+        const v = row.get("permission") orelse continue;
+        const p = switch (v) {
+            .string => |s| s,
+            else => continue,
+        };
+        var dup = false;
+        for (list.items) |existing| {
+            if (std.mem.eql(u8, existing, p)) {
+                dup = true;
+                break;
             }
-            if (!dup) {
-                const copy = try allocator.dupe(u8, p);
-                errdefer allocator.free(copy);
-                try list.append(allocator, copy);
-            }
+        }
+        if (!dup) {
+            const copy = try allocator.dupe(u8, p);
+            errdefer allocator.free(copy);
+            try list.append(allocator, copy);
         }
     }
 
@@ -248,6 +263,35 @@ test "CatalogPermDb emits each dialect's schema and grant" {
     try std.testing.expect(std.mem.indexOf(u8, schemaSql(.postgres), "TEXT NOT NULL") != null);
     try std.testing.expect(std.mem.indexOf(u8, schemaSql(.mysql), "VARCHAR(191)") != null);
     try std.testing.expect(std.mem.indexOf(u8, schemaSql(.mysql), "TEXT NOT NULL") == null);
+}
+
+test "CatalogPermDb answers several roles in one round trip" {
+    const allocator = std.testing.allocator;
+    const io = std.testing.io;
+    var client = try sqlx.Client.open(allocator, io, .{
+        .driver = .sqlite,
+        .sqlite_path = ":memory:",
+        .max_open_conns = 1,
+    });
+    defer client.deinit();
+
+    try ensureSchema(&client);
+    try grant(&client, "admin", "tenant:read");
+    try grant(&client, "admin", "tenant:suspend");
+    try grant(&client, "user", "tenant:read");
+    try grant(&client, "auditor", "audit:read");
+
+    const csv = try permissionsCsv(allocator, &client, &.{ "admin", "user", "auditor" });
+    defer allocator.free(csv);
+    try std.testing.expect(std.mem.indexOf(u8, csv, "tenant:suspend") != null);
+    try std.testing.expect(std.mem.indexOf(u8, csv, "audit:read") != null);
+    // `tenant:read` is granted to two roles but must appear once.
+    try std.testing.expectEqual(@as(usize, 1), std.mem.count(u8, csv, "tenant:read"));
+
+    // No roles: an empty answer, and no `IN ()` statement (invalid SQL).
+    const none = try permissionsCsv(allocator, &client, &.{});
+    defer allocator.free(none);
+    try std.testing.expectEqualStrings("", none);
 }
 
 test "each loaderFromClient reads its own database" {

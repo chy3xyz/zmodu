@@ -2,7 +2,7 @@
 
 zent ([chy3xyz/zent](https://github.com/chy3xyz/zent)) is an ent-style, schema-as-code ORM for Zig. This page covers how to use it in zmodu modules and where it stops.
 
-- zent **v0.97.0** (pinned by both examples), zmodu **v0.15.22+**, Zig **0.17.0**
+- zent **v0.97.1** (pinned by both examples), zmodu **v0.15.22+**, Zig **0.17.0**
 - Reference implementation: [`examples/zent-modulith/`](../../examples/zent-modulith/); upstream examples: `zig build run-start` / `run-complex` / `run-pool`
 - Related: [MODULE_LAYERS.md](../guide/MODULE_LAYERS.md) · [MODULITH.md](../guide/MODULITH.md) · [BEST_PRACTICES.md](../guide/BEST_PRACTICES.md) · [SQLX_DRIVERS.md](../guide/SQLX_DRIVERS.md)
 
@@ -299,7 +299,7 @@ zent ships a `build.zig.zon` module named `zent`. Pin a git tag in production; a
 
 ```zon
 .zent = .{
-    .url = "https://github.com/chy3xyz/zent/archive/refs/tags/v0.97.0.tar.gz",
+    .url = "https://github.com/chy3xyz/zent/archive/refs/tags/v0.97.1.tar.gz",
     .hash = "<fill after zig fetch>",
 },
 ```
@@ -318,7 +318,7 @@ Disabling a driver you do import fails at first use (`no module named 'pg_c'`), 
 
 On the zmodu side, path dependencies still `addImport("zmodu")` and use `db_link.Features.sqlite_only` so zmodu's sqlx does not link libpq or mysql. Full rules: [SQLX_DRIVERS.md](../guide/SQLX_DRIVERS.md) §8.
 
-Upgrade procedure: change the pin → delete `.zig-cache` → rebuild. Zig 0.17 incremental caches reuse the previously fetched module, so "it compiled" may still be the old version. v0.96.0 → v0.97.0 was verified this way for both examples (`zent-modulith` smoke 44/0 with no leaks; `metaverse-creative` `zig build demo` reports `demo_ok`).
+Upgrade procedure: change the pin → delete `.zig-cache` → rebuild. Zig 0.17 incremental caches reuse the previously fetched module, so "it compiled" may still be the old version. v0.97.0 → v0.97.1 was verified this way for both examples (`zent-modulith` smoke 44/0 with no leaks; `metaverse-creative` `zig build demo` reports `demo_ok`).
 
 ## 12. Anti-patterns
 
@@ -354,6 +354,7 @@ zig build test                # shape and error-set snapshots, including doc-cod
 
 | Version | Contract | Consumer action |
 |---------|----------|-----------------|
+| v0.97.1 | Outbox clock reads are fail-closed: a failed `clock_gettime` now returns `error.ClockUnavailable` from `claim` / `requeueStale` instead of stamping `created_at = 0` (which sorted a row behind every other row forever). SQLite views converge when `view_sql` changes: dropped and re-created only if the stored definition differs. New public `zent.walltime.nowMilliChecked()`. | No API change for consumers; adopt `nowMilliChecked` where stamping 0 would be a data bug. |
 | v0.97 | Package graph is a DAG; export paths unchanged (`zent.base`, `zent.services`, `zent.migrate` are new names); comptime budgets centralized in `base/budget.zig` (`flat`, `graph(tables)`). | None; repin and rebuild. |
 | v0.96 | Each migration plan statement runs in a savepoint (PG/SQLite); rejected statements roll back alone and return `error.MigrationStatementRejected`; classified errors pass through. Raw `?` SQL on PG needs `sql_dialect.translatePlaceholdersAlloc`. Cross-graph edge targets no longer guess table names or emit constraints. | Add a `switch` arm; translate raw SQL on PG. |
 | v0.93–v0.95 | PG catalog reads degrade when `pg_am` / `pg_proc` / `pg_extension` are missing (`error.IndexCatalogUnavailable`, `error.ForeignKeyCatalogUnavailable`); migration double-free fixed. `zent.walltime` for wall-clock timestamps (durations stay on `sql_logger.nowUs()`); `Row.textDup/blobDup` plus the borrowed-row lifetime contract; `ownedCopy` / `client.<entity>.ownedCopy`; `migrateSchemaInTx` (caller owns the transaction); PG extension precheck (`error.MissingPostgresExtension`) with zero DDL executed. | Add `MissingPostgresExtension` to `CreateTablesError` switches. |

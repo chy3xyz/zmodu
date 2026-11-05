@@ -158,6 +158,7 @@ test "compile all source files" {
     _ = @import("test/ErrorShape.zig");
     _ = @import("test/PermissionMatch.zig");
     _ = @import("test/RouteTemplate.zig");
+    _ = @import("test/LiveDbDialect.zig");
 
     // Runtime (v0.16): ring/mailbox/timer/pool/worker primitives
     _ = @import("runtime.zig");
