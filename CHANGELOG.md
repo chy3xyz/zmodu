@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.43.5] - 2026-11-05
 
 ### 依赖：zent v0.97.1
 
