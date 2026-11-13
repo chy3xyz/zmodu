@@ -2286,14 +2286,36 @@ pub const PostgresConn = struct {
     pub fn connectParams(allocator: std.mem.Allocator, host: []const u8, port: u16, user: []const u8, pass: []const u8, db: []const u8, query_timeout_ms: u32) !PostgresConn {
         // Use PQconnectdb with conninfo string so we can set sslmode
         const sslmode = if (std.c.getenv("PGSSLMODE")) |v| std.mem.span(v) else "require";
-        const conninfo = try allocator.print("host={s} port={d} dbname={s} user={s} password={s} sslmode={s} connect_timeout=10", .{ host, port, db, user, pass, sslmode });
+        const conninfo = try allocator.print("host={s} port={d} dbname={s} user={s} password={s} sslmode={s} connect_timeout={d}", .{ host, port, db, user, pass, sslmode, DEFAULT_CONNECT_TIMEOUT_SECS });
         defer allocator.free(conninfo);
         return connect(allocator, conninfo, query_timeout_ms);
     }
 
+    /// Default bound for a PostgreSQL dial when the conninfo carries none.
+    pub const DEFAULT_CONNECT_TIMEOUT_SECS: u32 = 10;
+
+    /// `conninfo` with `connect_timeout` guaranteed. Borrows the input when the
+    /// caller already mentions the option (libpq also accepts spaces around the
+    /// `=`, so the keyword alone is the test).
+    fn conninfoWithConnectTimeout(allocator: std.mem.Allocator, conninfo: []const u8) !struct { text: []const u8, owned: bool } {
+        if (std.mem.indexOf(u8, conninfo, "connect_timeout") != null) {
+            return .{ .text = conninfo, .owned = false };
+        }
+        const text = try allocator.print("{s} connect_timeout={d}", .{ conninfo, DEFAULT_CONNECT_TIMEOUT_SECS });
+        return .{ .text = text, .owned = true };
+    }
+
     /// Null-terminated string connect
     pub fn connect(allocator: std.mem.Allocator, conninfo: []const u8, query_timeout_ms: u32) !PostgresConn {
-        const null_terminated = try allocZ(allocator, conninfo);
+        // libpq treats a missing `connect_timeout` as "no timeout": a half-open
+        // TCP connection or a firewall dropping SYNs parks this fiber — and the
+        // pool slot it reserved — indefinitely (`max_wait_ms` bounds waiting for
+        // a *released* connection, not for a new one). `connectParams` writes
+        // the option; a caller-supplied conninfo may not, so it is added here
+        // only when absent (an explicit value still wins).
+        const effective = try conninfoWithConnectTimeout(allocator, conninfo);
+        defer if (effective.owned) allocator.free(effective.text);
+        const null_terminated = try allocZ(allocator, effective.text);
         defer allocator.free(null_terminated);
         const conn = libpq_c.PQconnectdb(null_terminated);
         if (conn == null) return error.DatabaseError;
@@ -11223,6 +11245,20 @@ test "mysql batch insert reports allocation failures as OutOfMemory" {
     }
     try std.testing.expect(succeeded);
     try std.testing.expect(failures > 0);
+}
+
+test "PG conninfo gains a connect_timeout only when it lacks one" {
+    const a = std.testing.allocator;
+    const borrowed = try PostgresConn.conninfoWithConnectTimeout(a, "host=127.0.0.1 connect_timeout=3");
+    try std.testing.expect(!borrowed.owned);
+    try std.testing.expectEqualStrings("host=127.0.0.1 connect_timeout=3", borrowed.text);
+
+    // libpq's default is "no timeout"; an unbounded dial parks the fiber and the
+    // pool slot it reserved, so a caller-supplied conninfo gets the default.
+    const added = try PostgresConn.conninfoWithConnectTimeout(a, "host=127.0.0.1 user=x");
+    defer a.free(added.text);
+    try std.testing.expect(added.owned);
+    try std.testing.expect(std.mem.indexOf(u8, added.text, "connect_timeout=10") != null);
 }
 
 test "mysql bind-param allocation failure is OutOfMemory" {

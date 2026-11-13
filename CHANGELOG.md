@@ -13,6 +13,17 @@
   （先清 `.zig-cache`）。
 - `docs/reference/ZENT.md` 版本口径与版本表新增 v0.97.2 行；`AGENTS.md` 同步。
 
+### 加固：PG 连接超时兜底 + accept 拒绝路径回归测试
+
+- `sqlx` PostgreSQL：`PQconnectdb` 的 `connect_timeout` 默认是**无限**，而池的 `max_wait_ms`
+  只约束「等别人归还连接」、不约束新建连接。此前只有 `host/port` 形态的参数会写入
+  `connect_timeout=10`，**调用方自带的 `postgres_conninfo` 原样透传**——缺这个选项时一次
+  半开 TCP / 被防火墙丢 SYN 的拨号会永久挂住该 fiber 及其占用的池槽位。现在 `connect()`
+  在 conninfo 未提及 `connect_timeout` 时补默认值（显式值仍然优先）。
+- `api/Server`：新增回归测试「无法派发的连接被关闭，而不是在 accept 线程上执行」——用
+  `concurrent_limit = .limited(1)` 占满并发额度，断言第二条连接收到 EOF 且 accept 循环
+  仍在监听。此前这条路径没有上游测试（`WebSocketServer` / `DistributedEventBus` 都有）。
+
 ## [0.43.5] - 2026-11-05
 
 ### 依赖：zent v0.97.1

@@ -5776,6 +5776,73 @@ test "over-limit connections get 503 when configured" {
     server.stop();
 }
 
+test "a connection that cannot be dispatched is closed, never run on the accept thread" {
+    const allocator = std.testing.allocator;
+    if (!@import("../test/NetworkProbe.zig").available()) return error.SkipZigTest;
+
+    // One concurrent unit: the first connection's keep-alive fiber takes it, so
+    // the second dispatch must fail. Under `Group.async` (the pre-fix call) that
+    // failure fell back to running the fiber on the accept thread, which is the
+    // freeze this test exists to prevent.
+    var threaded = std.Io.Threaded.init(allocator, .{ .concurrent_limit = .limited(1) });
+    defer threaded.deinit();
+    const io = threaded.io();
+
+    var server = Server.initWithConfig(io, allocator, .{
+        .port = 0,
+        .header_timeout_ms = 3000,
+    });
+    defer server.deinit();
+    var group = RouteRegistrar.init(&server, "");
+    try group.get("ping", struct {
+        fn h(ctx: *Context) anyerror!void {
+            try ctx.jsonStruct(200, .{ .ok = true });
+        }
+    }.h, null);
+
+    const th = try std.Thread.spawn(.{ .stack_size = 2 * 1024 * 1024 }, struct {
+        fn run(s: *Server) void {
+            s.start() catch {};
+        }
+    }.run, .{&server});
+    defer th.join();
+
+    var port: u16 = 0;
+    var tries: usize = 0;
+    while (tries < 200) : (tries += 1) {
+        if (server.listener) |*l| {
+            port = l.socket.address.getPort();
+            break;
+        }
+        std.Io.sleep(io, std.Io.Duration.fromMilliseconds(10), .real) catch {};
+    }
+    try std.testing.expect(port != 0);
+    const addr = try std.Io.net.IpAddress.parseIp4("127.0.0.1", port);
+
+    // Holder: accepted first, occupies the only unit.
+    var holder = try addr.connect(io, .{ .mode = .stream });
+    std.Io.sleep(io, std.Io.Duration.fromMilliseconds(150), .real) catch {};
+
+    var rejected = try addr.connect(io, .{ .mode = .stream });
+    var pfds = [_]std.posix.pollfd{.{ .fd = rejected.socket.handle, .events = std.posix.POLL.IN, .revents = 0 }};
+    const ready = try std.posix.poll(&pfds, 2000);
+    try std.testing.expect(ready > 0);
+    var buf: [64]u8 = undefined;
+    const n = std.posix.read(rejected.socket.handle, &buf) catch 0;
+    // Closed with no bytes: the accept loop rejected it instead of serving it.
+    try std.testing.expectEqual(@as(usize, 0), n);
+
+    // And the accept loop itself is intact — it is still listening.
+    try std.testing.expect(server.running.load(.monotonic));
+    try std.testing.expect(server.listener != null);
+
+    // Close both before stop(): the holder's fiber is parked in a read, and
+    // `start()`'s drain (`conn_group.await`) waits for it.
+    rejected.close(io);
+    holder.close(io);
+    server.stop();
+}
+
 test "a chunked-bodied request is refused instead of becoming a second request" {
     const allocator = std.testing.allocator;
     if (!@import("../test/NetworkProbe.zig").available()) return error.SkipZigTest;
