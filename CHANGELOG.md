@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### 依赖：zent v0.97.2（修连接池持锁握手）
+
+- 两个 zent 示例的 pin 从 v0.97.1 升到 **v0.97.2**。该版本修掉 zent 池的一处冻结：
+  建连握手原先在池互斥量**之内**执行，一次慢握手会冻住所有借用者**和所有 `release`**——
+  正是下游归档 BUG-043 描述的形态（事务已提交、请求卡在响应前、进程 0% CPU、PG 无活动）。
+  现在借用者只在锁内预留 `pending_connects` 槽位、锁外建连，`all.len + pending_connects`
+  仍然守着 `max_connections` 上限。
+- 实测：`zent-modulith` smoke **44/0、无泄漏**；`metaverse-creative` `zig build demo` 通过
+  （先清 `.zig-cache`）。
+- `docs/reference/ZENT.md` 版本口径与版本表新增 v0.97.2 行；`AGENTS.md` 同步。
+
 ## [0.43.5] - 2026-11-05
 
 ### 依赖：zent v0.97.1
