@@ -355,7 +355,22 @@ pub const BoundedWriter = struct {
 /// that already reset its socket turns a plain `writev` into `SIGPIPE` and the
 /// process dies. This is the WebSocket frame path, where a client that crashes
 /// mid-fan-out is exactly the peer that does it.
-pub fn writevAll(stream: std.Io.net.Stream, parts: []const []const u8) !void {
+pub fn writevAll(stream: std.Io.net.Stream, parts: []const []const u8) WriteError!void {
+    return writevAllInner(stream, parts);
+}
+
+/// Like `writevAll`, but arms `SO_SNDTIMEO` for exactly this call
+/// (`timeout_ms` 0 = unbounded). One timeout arm covers the whole vectored
+/// write — the HTTP response path uses this so header+body share one bound
+/// and one `sendmsg` instead of two `writeFullBounded` round-trips.
+pub fn writevAllBounded(stream: std.Io.net.Stream, parts: []const []const u8, timeout_ms: u32) WriteError!void {
+    if (timeout_ms == 0) return writevAllInner(stream, parts);
+    setSendTimeout(stream, timeout_ms);
+    defer clearSendTimeout(stream);
+    return writevAllInner(stream, parts);
+}
+
+fn writevAllInner(stream: std.Io.net.Stream, parts: []const []const u8) WriteError!void {
     var iovecs: [16]std.posix.iovec_const = undefined;
     var total: usize = 0;
     var count: usize = 0;
@@ -538,6 +553,23 @@ test "writevAll sends multiple segments as one stream" {
     const n = try std.posix.read(fds[1], &out);
     try std.testing.expectEqual(@as(usize, 6), n);
     try std.testing.expectEqualStrings("ABCDEF", &out);
+    _ = std.posix.system.close(fds[1]);
+}
+
+test "writevAllBounded matches writevAll when timeout is 0" {
+    var fds: [2]std.posix.socket_t = undefined;
+    const rc = std.posix.system.socketpair(std.posix.AF.UNIX, std.posix.SOCK.STREAM, 0, &fds);
+    switch (std.posix.errno(rc)) {
+        .SUCCESS => {},
+        else => return error.SkipZigTest,
+    }
+    const stream = std.Io.net.Stream{ .socket = .{ .handle = fds[0], .address = undefined } };
+    defer stream.close(std.testing.io);
+    try writevAllBounded(stream, &.{ "xy", "z" }, 0);
+    var out: [3]u8 = undefined;
+    const n = try std.posix.read(fds[1], &out);
+    try std.testing.expectEqual(@as(usize, 3), n);
+    try std.testing.expectEqualStrings("xyz", &out);
     _ = std.posix.system.close(fds[1]);
 }
 

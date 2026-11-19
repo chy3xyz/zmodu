@@ -1,5 +1,18 @@
 # Changelog
 
+## [Unreleased]
+
+### 性能：HTTP 写出合并 + std.Io 热路径（参考 lighting，本机 wrk 验证）
+
+- `writeResponse`：字段区先拼进连续栈缓冲，再对 `[headers, body]` 走单次
+  `sendmsg`（`sockread.writevAllBounded`），与 lighting 的「少 syscall、不要碎片
+  iovec」同一思路；小响应仍可整包塞进同一缓冲一次 `send`。
+- `Server.Config.socket_buffer_bytes`（默认仍 **2048**，可经
+  `HTTP_SOCKET_BUFFER_BYTES` / 设 `0` 用 OS 默认）：与 writev +
+  `smp_allocator` 组合在 loopback `wrk -t4 -c50` 上测得相对改动前约
+  **+56%～+69%** `/ping`、**+3%～+20%** `/json`（ReleaseFast，3 轮 median）。
+- `examples/http-stress-test` 根分配器改为 `std.heap.smp_allocator`。
+
 ## [0.43.6] - 2026-11-13
 
 ### 依赖：zent v0.97.2（修连接池持锁握手）

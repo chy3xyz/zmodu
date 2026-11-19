@@ -1095,17 +1095,7 @@ fn writeResponse(
         try validateResponseField(entry.key_ptr.*, entry.value_ptr.*);
     }
 
-    // The writer arms the send bound around each write it makes
-    // (`sockread.writeFullBounded`), so there is no socket state here that has to
-    // be held across the function — nothing else writes to this fd during it, and
-    // no application callback runs inside it.
-    var head_buf: [response_head_buffer_bytes]u8 = undefined;
-    var w = sockread.BoundedWriter.init(stream, &head_buf, write_timeout_ms);
-
     const status_text = getStatusText(status);
-
-    // Status line
-    try w.print("HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
 
     // The framing field, decided before the map is written.
     //
@@ -1134,20 +1124,76 @@ fn writeResponse(
     else
         declared_length != null);
 
-    // Headers
+    // Fast path (lighting / std.Io lesson): serialize the field section into one
+    // contiguous stack buffer, then emit `[headers, body]` with a single
+    // `sendmsg` under one `SO_SNDTIMEO` arm. Fragmented iovecs or separate
+    // header/body writes multiply syscalls; a few hundred bytes of memcpy is
+    // cheaper than an extra kernel transition.
+    var head_buf: [response_head_buffer_bytes]u8 = undefined;
+    var h_len: usize = 0;
+    var fits = true;
+
+    const appendPrint = struct {
+        fn go(buf: []u8, len: *usize, comptime fmt: []const u8, args: anytype) bool {
+            const written = std.fmt.bufPrint(buf[len.*..], fmt, args) catch return false;
+            len.* += written.len;
+            return true;
+        }
+    }.go;
+    const appendSlice = struct {
+        fn go(buf: []u8, len: *usize, bytes: []const u8) bool {
+            if (len.* + bytes.len > buf.len) return false;
+            @memcpy(buf[len.*..][0..bytes.len], bytes);
+            len.* += bytes.len;
+            return true;
+        }
+    }.go;
+
+    fits = appendPrint(&head_buf, &h_len, "HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
+    if (fits) {
+        var hiter = headers.iterator();
+        while (hiter.next()) |entry| {
+            if (!keep_declared_length and std.ascii.eqlIgnoreCase(entry.key_ptr.*, "content-length")) continue;
+            if (!appendPrint(&head_buf, &h_len, "{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* })) {
+                fits = false;
+                break;
+            }
+        }
+    }
+    if (fits and !chunked and !keep_declared_length) {
+        fits = appendPrint(&head_buf, &h_len, "Content-Length: {d}\r\n", .{body.len});
+    }
+    if (fits) fits = appendSlice(&head_buf, &h_len, "\r\n");
+
+    if (fits) {
+        const head = head_buf[0..h_len];
+        if (write_body and body.len > 0) {
+            if (h_len + body.len <= head_buf.len) {
+                @memcpy(head_buf[h_len..][0..body.len], body);
+                try sockread.writeFullBounded(stream, head_buf[0 .. h_len + body.len], write_timeout_ms);
+            } else {
+                try sockread.writevAllBounded(stream, &.{ head, body }, write_timeout_ms);
+            }
+        } else {
+            try sockread.writeFullBounded(stream, head, write_timeout_ms);
+        }
+        return;
+    }
+
+    // Overflow path: a field section larger than the stack scratch (rare —
+    // one max-sized value already nearly fills it). Stream through
+    // BoundedWriter; mid-flush is still one contiguous byte stream.
+    var w = sockread.BoundedWriter.init(stream, &head_buf, write_timeout_ms);
+    try w.print("HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
     var hiter = headers.iterator();
     while (hiter.next()) |entry| {
         if (!keep_declared_length and std.ascii.eqlIgnoreCase(entry.key_ptr.*, "content-length")) continue;
         try w.print("{s}: {s}\r\n", .{ entry.key_ptr.*, entry.value_ptr.* });
     }
-
     if (!chunked and !keep_declared_length) {
         try w.print("Content-Length: {d}\r\n", .{body.len});
     }
     try w.write("\r\n");
-
-    // Body (already chunk-encoded if Transfer-Encoding: chunked). Under `HEAD`
-    // there is none to write: the entity length above is the `GET` answer's.
     if (write_body) try w.write(body);
     try w.flush();
 }
@@ -1238,6 +1284,8 @@ pub const Server = struct {
     response_write_timeout_ms: u32 = 30_000,
     /// See `Config.ws_write_timeout_ms`.
     ws_write_timeout_ms: u32 = 0,
+    /// See `Config.socket_buffer_bytes`.
+    socket_buffer_bytes: u32 = 2048,
     /// See `Config.max_params`.
     max_params: usize = 1000,
     /// Accepted connections currently being served (reserved before the fiber
@@ -1334,6 +1382,13 @@ pub const Server = struct {
         /// number unless this overrides it). `response_write_timeout_ms = 0` is
         /// how you get the old unbounded behavior on both.
         ws_write_timeout_ms: u32 = 0,
+        /// Kernel `SO_RCVBUF` / `SO_SNDBUF` in bytes. **Default `2048`** —
+        /// measured better for small keep-alive responses under `wrk` (loopback
+        /// ReleaseFast, +writev + `smp_allocator`) and keeps ~28 KiB/conn of
+        /// kernel memory off high-connection WebSocket farms. Set `0` to leave
+        /// OS defaults (larger buffers; useful when responses are big enough
+        /// that a 2 KiB send buffer would stall).
+        socket_buffer_bytes: u32 = 2048,
     };
 
     pub const OverLimitResponse = enum { close, unavailable };
@@ -1380,6 +1435,7 @@ pub const Server = struct {
             .body_timeout_ms = config.body_timeout_ms,
             .response_write_timeout_ms = config.response_write_timeout_ms,
             .ws_write_timeout_ms = config.ws_write_timeout_ms,
+            .socket_buffer_bytes = config.socket_buffer_bytes,
             .max_params = config.max_params,
             .owned_route_mw = std.ArrayList([]const Middleware).empty,
         };
@@ -1975,14 +2031,11 @@ pub const Server = struct {
         }
     }
 
-    /// Reduce kernel TCP buffer sizes for high-connection WebSocket workloads.
-    /// Default: ~16KB recv + ~16KB send = 32KB/conn kernel memory.
-    /// After: 2KB recv + 2KB send = 4KB/conn. Saves 28KB per connection.
-    /// For 1M connections: 32GB → 4GB kernel memory.
-    pub fn tuneSocket(stream: std.Io.net.Stream) void {
+    /// Per-connection socket options. Always enables `TCP_NODELAY` and
+    /// `SO_KEEPALIVE`. When `buffer_bytes != 0`, also sets `SO_RCVBUF` /
+    /// `SO_SNDBUF` (default path passes `2048`). `0` leaves OS defaults.
+    pub fn tuneSocket(stream: std.Io.net.Stream, buffer_bytes: u32) void {
         const fd = stream.socket.handle;
-        const rcvbuf: i32 = 2048;
-        const sndbuf: i32 = 2048;
         const one: i32 = 1;
         // Raw `std.c.setsockopt`, not `std.posix.setsockopt`: stable 0.17's
         // posix wrapper answers EINVAL with `unreachable` (posix.zig:1083),
@@ -1990,8 +2043,11 @@ pub const Server = struct {
         // best-effort must not be able to cause. Same pattern as
         // `sockread.writeFull` (std.Io answers timed-out sends with
         // unreachable too); failures land in the debug log.
-        tuneSockOpt(fd, std.c.SOL.SOCKET, std.c.SO.RCVBUF, std.mem.asBytes(&rcvbuf), "RCVBUF");
-        tuneSockOpt(fd, std.c.SOL.SOCKET, std.c.SO.SNDBUF, std.mem.asBytes(&sndbuf), "SNDBUF");
+        if (buffer_bytes != 0) {
+            const n: i32 = @intCast(buffer_bytes);
+            tuneSockOpt(fd, std.c.SOL.SOCKET, std.c.SO.RCVBUF, std.mem.asBytes(&n), "RCVBUF");
+            tuneSockOpt(fd, std.c.SOL.SOCKET, std.c.SO.SNDBUF, std.mem.asBytes(&n), "SNDBUF");
+        }
         tuneSockOpt(fd, std.c.IPPROTO.TCP, std.c.TCP.NODELAY, std.mem.asBytes(&one), "TCP_NODELAY");
         // SO_KEEPALIVE only: idle/probe timings are the OS defaults (Linux and
         // macOS both idle 7200 s, probe every 75 s) — TCP_KEEPIDLE/TCP_KEEPINTVL
@@ -2091,6 +2147,7 @@ pub const Server = struct {
             .body_timeout_ms = envInt(u32, env, "HTTP_BODY_TIMEOUT_MS", 30_000),
             .response_write_timeout_ms = envInt(u32, env, "HTTP_RESPONSE_WRITE_TIMEOUT_MS", 30_000),
             .ws_write_timeout_ms = envInt(u32, env, "WS_WRITE_TIMEOUT_MS", 0),
+            .socket_buffer_bytes = envInt(u32, env, "HTTP_SOCKET_BUFFER_BYTES", 2048),
         });
     }
 
@@ -2327,7 +2384,7 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
     // connection, which is the descriptor this fiber would be closing.
     var fd_owned_by_fiber = true;
     defer if (fd_owned_by_fiber) stream.close(server.io);
-    Server.tuneSocket(stream);
+    Server.tuneSocket(stream, server.socket_buffer_bytes);
 
     var arena = std.heap.ArenaAllocator.init(allocator);
     defer arena.deinit();
@@ -5944,6 +6001,10 @@ test "WS write timeout disconnects a peer that stops reading" {
     var server = Server.initWithConfig(std.testing.io, allocator, .{
         .port = 0,
         .ws_write_timeout_ms = 200,
+        // Tiny kernel buffers so the non-reading peer fills SNDBUF quickly and
+        // the 200 ms write budget fires (OS-default buffers would absorb the
+        // first few 64 KiB frames and stretch this past the test window).
+        .socket_buffer_bytes = 2048,
     });
     defer server.deinit();
 
@@ -6017,7 +6078,7 @@ test "WS write timeout disconnects a peer that stops reading" {
     frame_buf[7] = 'o' ^ 9;
     _ = std.posix.system.write(stream.socket.handle, &frame_buf, 8);
 
-    // The send buffer is tiny (SO_SNDBUF=2048 via tuneSocket), so the push
+    // The send buffer is tiny (socket_buffer_bytes=2048), so the push
     // loop must hit the 200ms send timeout quickly instead of hanging.
     tries = 0;
     while (slow_ws_state.write_error == null and tries < 500) : (tries += 1) {
@@ -6375,6 +6436,7 @@ test "fromEnv reads the documented variables off init.environ_map" {
     try std.testing.expectEqual(@as(u32, 1500), server.response_write_timeout_ms);
     // Unset or malformed variables fall back to the documented defaults.
     try std.testing.expectEqual(@as(u32, 0), server.ws_write_timeout_ms);
+    try std.testing.expectEqual(@as(u32, 2048), server.socket_buffer_bytes);
 }
 
 test "fromEnv falls back to defaults when a variable is malformed" {
@@ -6441,6 +6503,51 @@ test "long response header values are written, not dropped" {
     try std.testing.expect(std.mem.indexOf(u8, response, origin) != null);
     try std.testing.expect(std.mem.indexOf(u8, response, "Content-Length: 2\r\n") != null);
     try std.testing.expect(std.mem.endsWith(u8, response, "\r\n\r\n{}"));
+}
+
+test "writeResponse emits a body larger than the head scratch via writev" {
+    const allocator = std.testing.allocator;
+    const fds = testSocketPair() orelse return error.SkipZigTest;
+    const stream = std.Io.net.Stream{ .socket = .{ .handle = fds[0], .address = undefined } };
+    defer stream.close(std.testing.io);
+    defer _ = std.posix.system.close(fds[1]);
+
+    // Force the header+body writev path: body alone exceeds the stack head
+    // buffer, so the fast path cannot append it and must sendmsg two parts.
+    // The payload is larger than a typical AF_UNIX socketpair buffer, so the
+    // writer runs on another thread while this one drains — otherwise the
+    // blocking send deadlocks against an unread peer.
+    const body = try allocator.alloc(u8, response_head_buffer_bytes + 64);
+    defer allocator.free(body);
+    @memset(body, 'B');
+
+    var headers = std.StringHashMap([]const u8).init(allocator);
+    defer headers.deinit();
+    try headers.put("Content-Type", "application/octet-stream");
+
+    const WriterCtx = struct {
+        stream: std.Io.net.Stream,
+        headers: *std.StringHashMap([]const u8),
+        body: []const u8,
+        err: ?anyerror = null,
+    };
+    var wctx: WriterCtx = .{ .stream = stream, .headers = &headers, .body = body };
+    const th = try std.Thread.spawn(.{}, struct {
+        fn run(ctx: *WriterCtx) void {
+            writeResponse(ctx.stream, 200, ctx.headers.*, ctx.body, true, 0) catch |err| {
+                ctx.err = err;
+            };
+        }
+    }.run, .{&wctx});
+    defer th.join();
+
+    const buf = try allocator.alloc(u8, body.len + 512);
+    defer allocator.free(buf);
+    const response = try readPeer(fds[1], buf, 5000);
+    try std.testing.expect(wctx.err == null);
+    try std.testing.expect(std.mem.startsWith(u8, response, "HTTP/1.1 200 OK\r\n"));
+    try std.testing.expect(std.mem.indexOf(u8, response, "Content-Length: ") != null);
+    try std.testing.expect(std.mem.endsWith(u8, response, body));
 }
 
 test "response header values have an explicit ceiling, reported as an error" {

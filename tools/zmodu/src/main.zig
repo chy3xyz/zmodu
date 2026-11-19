@@ -7960,7 +7960,8 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
             \\fs.file-max = 2000000
             \\fs.nr_open = 2000000
             \\
-            \\# TCP buffer sizes (matching SO_RCVBUF/SO_SNDBUF=2048)
+            \\# TCP buffer sizes — matches Server.Config.socket_buffer_bytes = 2048
+            \\# (framework default; set 0 for OS defaults on large responses).
             \\# min / default / max
             \\net.ipv4.tcp_rmem = "2048 4096 8192"
             \\net.ipv4.tcp_wmem = "2048 4096 8192"
@@ -8036,12 +8037,13 @@ fn generateImModule(io: std.Io, allocator: std.mem.Allocator, project_dir: []con
             \\|-----------|------|-------|
             \\| WsSession struct | 120B | Gateway connection state |
             \\| ConnectionEntry | 48B | Registry shard entry |
-            \\| Kernel TCP recv | 2KB | SO_RCVBUF=2048 |
-            \\| Kernel TCP send | 2KB | SO_SNDBUF=2048 |
+            \\| Kernel TCP recv | 2KB | default `socket_buffer_bytes = 2048` |
+            \\| Kernel TCP send | 2KB | default `socket_buffer_bytes = 2048` |
             \\| BufferPool (shared) | ~300MB | 75K × 4KB, pooled |
             \\| **Total per connection** | **~4.3KB** | |
             \\
-            \\1M connections: ~4.3GB kernel + ~200MB user = ~4.5GB total.
+            \\1M connections: ~4.3GB kernel + ~200MB user ≈ 4.5GB.
+            \\Set `socket_buffer_bytes = 0` for OS-sized buffers on large responses.
             \\
             \\## Performance Benchmarks
             \\

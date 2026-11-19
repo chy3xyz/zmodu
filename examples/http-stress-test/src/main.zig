@@ -64,7 +64,11 @@ const ClientTask = struct {
 };
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+    // Concurrent accept + connection fibers allocate heavily; `smp_allocator`
+    // avoids the GPA lock convoy that lighting measured under wrk (see
+    // jiacai2050/lighting bottleneck notes). Server default
+    // `socket_buffer_bytes = 2048` matched the best loopback wrk numbers.
+    const allocator = std.heap.smp_allocator;
 
     // Give the stress test enough fibers for the accept loop + all clients + server
     // connection fibers so scheduling does not degrade to inline execution under the

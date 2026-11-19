@@ -53,6 +53,7 @@ bench-results.json
 *.temp
 tmp/
 temp/
+.tmp/
 
 # OS files
 Thumbs.db
