@@ -112,7 +112,7 @@ Removed outright in 0.17 — compile errors, not deprecation warnings:
 
 The full removed list for framework contributors, including POSIX signals and `crc.Crc32Iscsi`, is in [AGENTS.md](../../AGENTS.md) under "Zig 0.17.0 — what's REMOVED".
 
-## v0.43.6 之后（未发布批次）
+## v0.43.7
 
 1. **`Server.tuneSocket` 需要 `buffer_bytes`**（compile error if you called it). Prefer not calling it — `connFiber` already does. Pass `server.socket_buffer_bytes` (default `2048`) or `0` for OS defaults.
 2. **`Config.socket_buffer_bytes` is now explicit** (non-breaking default stays `2048`). Set `0` / `HTTP_SOCKET_BUFFER_BYTES=0` to leave OS `SO_RCVBUF`/`SO_SNDBUF`. Measured: default `2048` + writev + `smp_allocator` wins small keep-alive `wrk` on loopback.

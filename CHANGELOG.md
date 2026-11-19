@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.43.7] - 2026-11-20
 
 ### 性能：HTTP 写出合并 + std.Io 热路径（参考 lighting，本机 wrk 验证）
 

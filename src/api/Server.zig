@@ -4302,11 +4302,14 @@ test "response_write_timeout_ms = 0 keeps the unbounded write: only the client c
 
     // Reading is what ends it, and the whole body arrives (nothing was cut):
     // `total` counts the field section too, so the body is what follows the
-    // blank line the response starts with.
+    // blank line the response starts with. Stop only after headers + the
+    // declared body are in — a loop bound of just `stalled_response_bytes`
+    // can exit `head_bytes` short when the last read lands on that exact
+    // total (common with the default 2 KiB send buffer).
     var total: usize = 0;
     var head_bytes: usize = 0;
     var buf: [64 * 1024]u8 = undefined;
-    while (total < stalled_response_bytes) {
+    while (head_bytes == 0 or total < head_bytes + stalled_response_bytes) {
         const n = std.posix.read(stream.socket.handle, &buf) catch break;
         if (n == 0) break;
         if (head_bytes == 0) {
