@@ -18,7 +18,8 @@ const OrderModule = @import("modules/order.zig");
 const PaymentModule = @import("modules/payment.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+    // Prefer smp_allocator for apps that will add HTTP (GPA lock convoy under load).
+    const allocator = std.heap.smp_allocator;
 
     std.log.info("=== zmodu Basic Example ===", .{});
     std.log.info("Demonstrates: Module definition, dependency management, lifecycle\n", .{});

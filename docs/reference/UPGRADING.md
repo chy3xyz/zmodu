@@ -112,6 +112,12 @@ Removed outright in 0.17 — compile errors, not deprecation warnings:
 
 The full removed list for framework contributors, including POSIX signals and `crc.Crc32Iscsi`, is in [AGENTS.md](../../AGENTS.md) under "Zig 0.17.0 — what's REMOVED".
 
+## v0.43.7 之后（未发布批次）
+
+1. **`Config.idle_timeout_ms`**（default `0` = inherit `header_timeout_ms`; `HTTP_IDLE_TIMEOUT_MS`). Keep-alive quiet wait is no longer forced to the slowloris header budget.
+2. **Flagship / scaffold roots**: prefer `std.heap.smp_allocator` (tenant-mgmt, shopdemo, zmsaas, basic, `zmodu scaffold` main). Behaviour-preserving; GPA lock convoy under `wrk` otherwise.
+3. **HTTP/1.1 parse path**: connection buffer + zero-copy header values (internal). Request header values may borrow the connection buffer for the request lifetime — do not retain them past the handler return.
+
 ## v0.43.7
 
 1. **`Server.tuneSocket` 需要 `buffer_bytes`**（compile error if you called it). Prefer not calling it — `connFiber` already does. Pass `server.socket_buffer_bytes` (default `2048`) or `0` for OS defaults.

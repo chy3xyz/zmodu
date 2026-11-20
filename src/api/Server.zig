@@ -354,6 +354,158 @@ const StreamReader = struct {
         };
         return out.len;
     }
+
+    /// Seed this reader with bytes already pulled into a connection buffer
+    /// (H2 preface / h2c upgrade handoff). Truncates if `data` exceeds the
+    /// internal 8 KiB scratch — callers must ensure leftovers fit (true for
+    /// the preface path and typical upgrade leftovers).
+    fn seedFromSlice(self: *StreamReader, data: []const u8) void {
+        const n = @min(data.len, self.buffer.len);
+        if (n > 0) @memcpy(self.buffer[0..n], data[0..n]);
+        self.interface.seek = 0;
+        self.interface.end = n;
+    }
+};
+
+/// Cap on discarding an unread request body before giving up keep-alive
+/// (lighting: 256 KiB). Larger leftovers force a connection close so framing
+/// cannot desync into the next request line.
+const max_body_drain_bytes: usize = 256 * 1024;
+
+/// HTTP/2 prior-knowledge preface (RFC 9113 §3.4) — 24 bytes.
+const http2_preface = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+
+/// Connection-scoped read buffer for HTTP/1.1: fill until `\r\n\r\n`, parse
+/// in place, keep pipelined leftovers via `consume`/`copyForwards`. Replaces
+/// per-line `StreamReader` traffic on the H1 hot path (lighting `serveConn`).
+const ConnReadBuf = struct {
+    buf: []u8,
+    len: usize = 0,
+    stream: std.Io.net.Stream,
+    io: std.Io,
+    timed_out: bool = false,
+
+    fn init(buf: []u8, stream: std.Io.net.Stream, io: std.Io) ConnReadBuf {
+        return .{ .buf = buf, .stream = stream, .io = io };
+    }
+
+    fn available(self: *const ConnReadBuf) []const u8 {
+        return self.buf[0..self.len];
+    }
+
+    fn consume(self: *ConnReadBuf, n: usize) void {
+        if (n == 0) return;
+        if (n >= self.len) {
+            self.len = 0;
+            return;
+        }
+        const remain = self.len - n;
+        std.mem.copyForwards(u8, self.buf[0..remain], self.buf[n..self.len]);
+        self.len = remain;
+    }
+
+    fn readInto(self: *ConnReadBuf, out: []u8, deadline_ns: ?i96) !usize {
+        if (deadline_ns) |deadline| {
+            const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+            const remaining_ns = deadline - now;
+            if (remaining_ns <= 0) {
+                self.timed_out = true;
+                return error.ReadFailed;
+            }
+            const remaining_ms = @divTrunc(remaining_ns, std.time.ns_per_ms) + 1;
+            var pfds = [1]std.posix.pollfd{.{
+                .fd = self.stream.socket.handle,
+                .events = std.posix.POLL.IN,
+                .revents = 0,
+            }};
+            const ready = std.posix.poll(&pfds, @intCast(@min(remaining_ms, @as(i96, std.math.maxInt(i32))))) catch return error.ReadFailed;
+            if (ready == 0) {
+                self.timed_out = true;
+                return error.ReadFailed;
+            }
+        }
+        const n = std.posix.read(self.stream.socket.handle, out) catch return error.ReadFailed;
+        if (n == 0) return error.EndOfStream;
+        return n;
+    }
+
+    fn deadlineFromTimeout(self: *ConnReadBuf, timeout_ms: u32) ?i96 {
+        if (timeout_ms == 0) return null;
+        const now = std.Io.Timestamp.now(self.io, .awake).nanoseconds;
+        return now + @as(i96, timeout_ms) * std.time.ns_per_ms;
+    }
+
+    /// Grow `buf` until `\r\n\r\n` is present. When `is_idle` and the buffer is
+    /// empty, the first wait uses `idle_timeout_ms` (keep-alive quiet period);
+    /// once any byte arrives (or the buffer already had bytes), `header_timeout_ms`
+    /// bounds the rest of the head (slowloris).
+    fn ensureHead(self: *ConnReadBuf, idle_timeout_ms: u32, header_timeout_ms: u32, is_idle: bool) !usize {
+        if (std.mem.indexOf(u8, self.buf[0..self.len], "\r\n\r\n")) |i| return i;
+
+        var header_deadline: ?i96 = null;
+        var used_idle = false;
+
+        while (true) {
+            if (self.len >= self.buf.len) return error.TooManyHeaders;
+
+            const use_idle = is_idle and self.len == 0 and !used_idle;
+            if (use_idle) {
+                used_idle = true;
+            } else if (header_deadline == null) {
+                header_deadline = self.deadlineFromTimeout(header_timeout_ms);
+            }
+
+            const deadline: ?i96 = if (use_idle)
+                self.deadlineFromTimeout(idle_timeout_ms)
+            else
+                header_deadline;
+
+            self.timed_out = false;
+            const n = self.readInto(self.buf[self.len..], deadline) catch |err| switch (err) {
+                error.ReadFailed => {
+                    // Idle quiet close: peer went away or idle budget spent —
+                    // no 408 (nothing to answer). Header-phase timeout → 408.
+                    if (use_idle) return error.EndOfStream;
+                    return error.ReadFailed;
+                },
+                error.EndOfStream => return error.EndOfStream,
+            };
+            self.len += n;
+
+            if (std.mem.indexOf(u8, self.buf[0..self.len], "\r\n\r\n")) |i| return i;
+        }
+    }
+
+    /// Read exactly `out.len` bytes with an optional body deadline, without
+    /// touching the buffered head region (caller copies leftovers itself).
+    fn readExactFromSocket(self: *ConnReadBuf, out: []u8, timeout_ms: u32) !void {
+        const deadline = self.deadlineFromTimeout(timeout_ms);
+        var filled: usize = 0;
+        while (filled < out.len) {
+            self.timed_out = false;
+            const n = try self.readInto(out[filled..], deadline);
+            filled += n;
+        }
+    }
+
+    /// Discard up to `want` body bytes after `head_bytes` (buffer then socket).
+    /// Best-effort; used before closing on `BodyTooLarge` / unread framing.
+    fn drainBody(self: *ConnReadBuf, head_bytes: usize, want: usize, timeout_ms: u32) void {
+        if (want == 0) return;
+        var discarded: usize = 0;
+        if (head_bytes < self.len) {
+            const from_buf = @min(self.len - head_bytes, want);
+            discarded = from_buf;
+        }
+        var tmp: [1024]u8 = undefined;
+        const deadline = self.deadlineFromTimeout(timeout_ms);
+        while (discarded < want) {
+            const chunk = @min(tmp.len, want - discarded);
+            self.timed_out = false;
+            const n = self.readInto(tmp[0..chunk], deadline) catch break;
+            discarded += n;
+        }
+    }
 };
 
 /// HTTP request header limits (header-bomb DoS guard).
@@ -540,6 +692,118 @@ const RequestParser = struct {
             .headers = headers,
             .body = body,
             ._request_line_buf = request_line_owned,
+            .values_borrowed = false,
+        };
+    }
+
+    /// Zero-copy head parse over a contiguous buffer that already contains
+    /// `\r\n\r\n` at `head_end`. Header **values** and the request-target borrow
+    /// from `buffer` (valid until the caller `consume`s those bytes). Header
+    /// **names** are still lowercased+duped for the HashMap. Body is not read —
+    /// `bytes_consumed` is `head_end + 4` so the caller can take the body from
+    /// the connection buffer / socket.
+    pub fn parseHeadFromBuffer(
+        self: *RequestParser,
+        buffer: []const u8,
+        head_end: usize,
+        header_limits: HeaderLimits,
+        max_params: usize,
+    ) !struct { request: ParsedRequest, bytes_consumed: usize } {
+        if (head_end + 4 > buffer.len) return error.InvalidRequest;
+        if (buffer[head_end] != '\r' or buffer[head_end + 1] != '\n' or
+            buffer[head_end + 2] != '\r' or buffer[head_end + 3] != '\n')
+            return error.InvalidRequest;
+
+        const head_part = buffer[0..head_end];
+        var line_it = std.mem.splitSequence(u8, head_part, "\r\n");
+        const request_line = line_it.next() orelse return error.InvalidRequest;
+        if (request_line.len < 14) return error.InvalidRequest;
+        if (request_line[0] == ' ' or request_line[0] == '\t') return error.InvalidRequest;
+
+        var fields = std.mem.tokenizeScalar(u8, request_line, ' ');
+        const method_str = fields.next() orelse return error.InvalidRequest;
+        const raw_path = fields.next() orelse return error.InvalidRequest;
+        const version = fields.next() orelse return error.InvalidRequest;
+        if (fields.next() != null) return error.InvalidRequest;
+        if (!isHttp1Version(version)) return error.InvalidRequest;
+        const method = Method.fromString(method_str) orelse return error.InvalidMethod;
+
+        // Own a copy of the request line so path/raw_path stay valid even if
+        // the caller later shifts the connection buffer — small (one line).
+        const request_line_owned = try self.allocator.dupe(u8, request_line);
+        errdefer self.allocator.free(request_line_owned);
+
+        // Remap path/query onto the owned line (same offsets as request_line).
+        const method_len = method_str.len;
+        const raw_path_owned = request_line_owned[method_len + 1 ..][0..raw_path.len];
+        var path: []const u8 = raw_path_owned;
+        var query_map = Params.init(self.allocator);
+        errdefer query_map.deinit();
+        if (std.mem.indexOf(u8, raw_path_owned, "?")) |query_start| {
+            path = raw_path_owned[0..query_start];
+            try parseQueryInto(&query_map, raw_path_owned[query_start + 1 ..], self.allocator, max_params);
+        }
+
+        var headers = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var it = headers.iterator();
+            while (it.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+                // values are borrowed — do not free
+            }
+            headers.deinit();
+        }
+
+        var header_count: usize = 0;
+        var header_bytes: usize = 0;
+        var content_length: ?usize = null;
+        var saw_transfer_encoding = false;
+
+        while (line_it.next()) |header_line| {
+            if (header_line.len == 0) continue;
+            header_count += 1;
+            header_bytes += header_line.len;
+            if (header_count > header_limits.max_count) return error.TooManyHeaders;
+            if (header_bytes > header_limits.max_total_bytes) return error.TooManyHeaders;
+
+            const field = splitHeaderLine(header_line) orelse return error.InvalidHeader;
+            const key_raw = try self.allocator.dupe(u8, field.name);
+            for (key_raw) |*c| c.* = std.ascii.toLower(c.*);
+
+            if (std.mem.eql(u8, key_raw, "content-length")) {
+                if (content_length != null) {
+                    self.allocator.free(key_raw);
+                    return error.DuplicateContentLength;
+                }
+                content_length = parseContentLength(field.value) orelse {
+                    self.allocator.free(key_raw);
+                    return error.InvalidContentLength;
+                };
+            } else if (std.mem.eql(u8, key_raw, "transfer-encoding")) {
+                saw_transfer_encoding = true;
+            }
+
+            // Value borrows from `buffer` (zero-copy).
+            try headers.put(key_raw, field.value);
+        }
+
+        if (saw_transfer_encoding) {
+            if (content_length != null) return error.ConflictingBodyFraming;
+            return error.TransferEncodingNotSupported;
+        }
+
+        return .{
+            .request = .{
+                .method = method,
+                .path = path,
+                .raw_path = raw_path_owned,
+                .query = query_map,
+                .headers = headers,
+                .body = null,
+                ._request_line_buf = request_line_owned,
+                .values_borrowed = true,
+            },
+            .bytes_consumed = head_end + 4,
         };
     }
 };
@@ -596,6 +860,28 @@ test "percentDecode decodes query values" {
     try std.testing.expectEqualStrings("hello", plain);
 }
 
+test "parseHeadFromBuffer zero-copy values and pipelined leftover" {
+    const allocator = std.testing.allocator;
+    const raw =
+        "GET /x?y=1 HTTP/1.1\r\nHost: example\r\nX-Trace: abc\r\n\r\n" ++
+        "GET /next HTTP/1.1\r\nHost: example\r\n\r\n";
+    const head_end = std.mem.indexOf(u8, raw, "\r\n\r\n").?;
+    var parser = RequestParser.init(allocator);
+    const parsed = try parser.parseHeadFromBuffer(raw, head_end, .{}, 100);
+    var request = parsed.request;
+    defer request.deinit(allocator);
+
+    try std.testing.expect(request.values_borrowed);
+    try std.testing.expectEqual(head_end + 4, parsed.bytes_consumed);
+    try std.testing.expectEqual(Method.GET, request.method);
+    try std.testing.expectEqualStrings("/x", request.path);
+    try std.testing.expectEqualStrings("example", request.headers.get("host").?);
+    try std.testing.expectEqualStrings("abc", request.headers.get("x-trace").?);
+    // Values alias the input buffer (zero-copy).
+    try std.testing.expect(@intFromPtr(request.headers.get("host").?.ptr) >= @intFromPtr(raw.ptr));
+    try std.testing.expectEqualStrings("GET /next HTTP/1.1\r\nHost: example\r\n\r\n", raw[parsed.bytes_consumed..]);
+}
+
 const Params = @import("../http/Params.zig").Params;
 
 const ParsedRequest = struct {
@@ -608,6 +894,9 @@ const ParsedRequest = struct {
     /// Owned buffer that path and raw_path slice into.
     /// Freed by deinit() — do not free path/raw_path separately.
     _request_line_buf: []const u8,
+    /// When true, header values borrow from the connection buffer and must
+    /// not be freed here (keys are always owned).
+    values_borrowed: bool = false,
 
     pub fn deinit(self: *ParsedRequest, allocator: std.mem.Allocator) void {
         allocator.free(self._request_line_buf);
@@ -617,7 +906,7 @@ const ParsedRequest = struct {
         var headers_iter = self.headers.iterator();
         while (headers_iter.next()) |entry| {
             allocator.free(entry.key_ptr.*);
-            allocator.free(entry.value_ptr.*);
+            if (!self.values_borrowed) allocator.free(entry.value_ptr.*);
         }
         self.headers.deinit();
 
@@ -1165,25 +1454,31 @@ fn writeResponse(
     }
     if (fits) fits = appendSlice(&head_buf, &h_len, "\r\n");
 
+    // Arm SO_SNDTIMEO once for the whole response (lighting: one write budget
+    // per message). Per-call arm/clear in writeFullBounded was two setsockopt
+    // syscalls per fragment; the fd is ours until this returns.
+    if (write_timeout_ms != 0) sockread.setSendTimeout(stream, write_timeout_ms);
+    defer if (write_timeout_ms != 0) sockread.clearSendTimeout(stream);
+
     if (fits) {
         const head = head_buf[0..h_len];
         if (write_body and body.len > 0) {
             if (h_len + body.len <= head_buf.len) {
                 @memcpy(head_buf[h_len..][0..body.len], body);
-                try sockread.writeFullBounded(stream, head_buf[0 .. h_len + body.len], write_timeout_ms);
+                try sockread.writeFull(stream, head_buf[0 .. h_len + body.len]);
             } else {
-                try sockread.writevAllBounded(stream, &.{ head, body }, write_timeout_ms);
+                try sockread.writevAll(stream, &.{ head, body });
             }
         } else {
-            try sockread.writeFullBounded(stream, head, write_timeout_ms);
+            try sockread.writeFull(stream, head);
         }
         return;
     }
 
     // Overflow path: a field section larger than the stack scratch (rare —
     // one max-sized value already nearly fills it). Stream through
-    // BoundedWriter; mid-flush is still one contiguous byte stream.
-    var w = sockread.BoundedWriter.init(stream, &head_buf, write_timeout_ms);
+    // BoundedWriter; timeout already armed above (`timeout_ms = 0`).
+    var w = sockread.BoundedWriter.init(stream, &head_buf, 0);
     try w.print("HTTP/1.1 {d} {s}\r\n", .{ status, status_text });
     var hiter = headers.iterator();
     while (hiter.next()) |entry| {
@@ -1278,6 +1573,8 @@ pub const Server = struct {
     over_limit_response: OverLimitResponse = .close,
     /// See `Config.header_timeout_ms`.
     header_timeout_ms: u32 = 10_000,
+    /// See `Config.idle_timeout_ms`.
+    idle_timeout_ms: u32 = 0,
     /// See `Config.body_timeout_ms`.
     body_timeout_ms: u32 = 30_000,
     /// See `Config.response_write_timeout_ms`.
@@ -1348,6 +1645,11 @@ pub const Server = struct {
         /// `request_timeout_ms` (which only covers handler execution). Bounds
         /// slowloris-style trickle. 0 disables the deadline.
         header_timeout_ms: u32 = 10_000,
+        /// Quiet keep-alive wait between requests (first byte only). **0 =
+        /// inherit `header_timeout_ms`** (previous behaviour). Set higher than
+        /// the header budget for long-lived clients; lower it under load tests
+        /// that want idle sockets reaped without waiting for slowloris defence.
+        idle_timeout_ms: u32 = 0,
         /// Deadline for receiving the request body, armed at the blank line —
         /// `header_timeout_ms` is already satisfied by then, and the handler
         /// budget starts only after the body is in. Without it a
@@ -1432,6 +1734,7 @@ pub const Server = struct {
             .connection_stack_size = config.connection_stack_size,
             .over_limit_response = config.over_limit_response,
             .header_timeout_ms = config.header_timeout_ms,
+            .idle_timeout_ms = config.idle_timeout_ms,
             .body_timeout_ms = config.body_timeout_ms,
             .response_write_timeout_ms = config.response_write_timeout_ms,
             .ws_write_timeout_ms = config.ws_write_timeout_ms,
@@ -2144,11 +2447,18 @@ pub const Server = struct {
             .max_body_size = envInt(usize, env, "HTTP_MAX_BODY", 8 * 1024 * 1024),
             .max_connections = envInt(usize, env, "HTTP_MAX_CONNECTIONS", 0),
             .header_timeout_ms = envInt(u32, env, "HTTP_HEADER_TIMEOUT_MS", 10_000),
+            .idle_timeout_ms = envInt(u32, env, "HTTP_IDLE_TIMEOUT_MS", 0),
             .body_timeout_ms = envInt(u32, env, "HTTP_BODY_TIMEOUT_MS", 30_000),
             .response_write_timeout_ms = envInt(u32, env, "HTTP_RESPONSE_WRITE_TIMEOUT_MS", 30_000),
             .ws_write_timeout_ms = envInt(u32, env, "WS_WRITE_TIMEOUT_MS", 0),
             .socket_buffer_bytes = envInt(u32, env, "HTTP_SOCKET_BUFFER_BYTES", 2048),
         });
+    }
+
+    /// Effective keep-alive idle wait: explicit `idle_timeout_ms`, else header budget.
+    fn effectiveIdleTimeoutMs(self: *const Server) u32 {
+        if (self.idle_timeout_ms != 0) return self.idle_timeout_ms;
+        return self.header_timeout_ms;
     }
 
     /// Close the listener exactly once, whichever caller wins the race.
@@ -2390,51 +2700,51 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
+    // Connection read buffer: pipelining leftovers + zero-copy header values.
+    const conn_cap = @max(server.header_limits.max_total_bytes + 1024, @as(usize, 8192));
+    const conn_storage = allocator.alloc(u8, conn_cap) catch return;
+    defer allocator.free(conn_storage);
+    var conn = ConnReadBuf.init(conn_storage, stream, server.io);
+
+    // StreamReader is only for H2 / h2c handoff (frame loop expects Io.Reader).
     var reader: StreamReader = undefined;
     reader.setup(stream, server.io);
     var parser = RequestParser.init(arena_alloc);
 
     var req_count: usize = 0;
+    var is_idle = false;
     while (req_count < server.max_requests_per_conn and server.running.load(.monotonic)) : (req_count += 1) {
         resetRequestArena(&arena);
 
         const start_time = std.Io.Timestamp.now(server.io, .real);
 
-        // Bound the request line + header phase (slowloris guard). The parser
-        // re-arms it for the body at the blank line; re-armed per request here.
-        reader.setReadDeadline(server.header_timeout_ms);
-
-        // Prefetch first line — HTTP/2 prior-knowledge preface starts with PRI.
-        const first_line_raw = reader.readUntilDelimiterOrEof('\n') catch |err| {
-            // No complete request line: there is nothing to read a method out of,
-            // so these two answers are the `GET` shape (see `writeErrorResponse`).
+        const head_end = conn.ensureHead(server.effectiveIdleTimeoutMs(), server.header_timeout_ms, is_idle) catch |err| {
             switch (err) {
-                error.ReadFailed => {
-                    if (reader.timed_out) writeErrorResponse(stream, arena_alloc, 408, "Request Timeout", false, server.response_write_timeout_ms);
+                error.EndOfStream => return,
+                error.TooManyHeaders => {
+                    writeErrorResponse(stream, arena_alloc, 431, "Request Header Fields Too Large", false, server.response_write_timeout_ms);
                     return;
                 },
-                else => {
-                    writeErrorResponse(stream, arena_alloc, 400, "Bad Request", false, server.response_write_timeout_ms);
+                error.ReadFailed => {
+                    if (conn.timed_out) writeErrorResponse(stream, arena_alloc, 408, "Request Timeout", false, server.response_write_timeout_ms);
                     return;
                 },
             }
-        } orelse return;
-        const first_line = RequestParser.trimCrlf(first_line_raw);
+        };
 
-        if (server.enable_http2 and std.mem.eql(u8, first_line, "PRI * HTTP/2.0")) {
-            // Consume remaining preface: empty line, "SM", empty line
-            const l2 = (reader.readUntilDelimiterOrEof('\n') catch return) orelse return;
-            const l3 = (reader.readUntilDelimiterOrEof('\n') catch return) orelse return;
-            const l4 = (reader.readUntilDelimiterOrEof('\n') catch return) orelse return;
-            if (RequestParser.trimCrlf(l2).len != 0) return;
-            if (!std.mem.eql(u8, RequestParser.trimCrlf(l3), "SM")) return;
-            if (RequestParser.trimCrlf(l4).len != 0) return;
-            // The preface is consumed; H2 frames are not header-phase reads.
+        // HTTP/2 prior-knowledge preface (may share the first `\r\n\r\n` with ensureHead).
+        if (server.enable_http2 and std.mem.startsWith(u8, conn.available(), "PRI * HTTP/2.0\r\n\r\n")) {
+            const deadline = conn.deadlineFromTimeout(server.header_timeout_ms);
+            while (conn.len < http2_preface.len) {
+                if (conn.len >= conn.buf.len) return;
+                conn.timed_out = false;
+                const n = conn.readInto(conn.buf[conn.len..], deadline) catch return;
+                conn.len += n;
+            }
+            if (!std.mem.eql(u8, conn.buf[0..http2_preface.len], http2_preface)) return;
             reader.clearReadDeadline();
-
-            // Reuse the same StreamReader for the H2 session (do not create a second
-            // reader on this stream). Any bytes already buffered after the preface
-            // stay in the reader and are consumed as frames.
+            reader.seedFromSlice(conn.buf[http2_preface.len..conn.len]);
+            conn.len = 0;
             Http2Server.serveAfterPrefacePrefetchReader(
                 server.io,
                 stream,
@@ -2448,24 +2758,60 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
             return;
         }
 
-        var request = parser.parseAfterRequestLine(&reader, first_line_raw, server.max_body_size, server.header_limits, server.max_params, server.body_timeout_ms) catch |err| {
-            switch (err) {
-                error.ReadFailed => {
-                    // A spent read deadline is the client that stalled (headers
-                    // or body): 408, observable, instead of a vanished socket.
-                    if (reader.timed_out) writeErrorResponse(stream, arena_alloc, 408, "Request Timeout", requestLineIsHead(first_line_raw), server.response_write_timeout_ms);
-                    return;
-                },
-                else => {},
-            }
-            // A malformed request is a client fault, not a server error: warn,
-            // so scanners/probes cannot inflate the error signal.
+        const first_line_for_errors = blk: {
+            const nl = std.mem.indexOfScalar(u8, conn.buf[0..head_end], '\n') orelse head_end;
+            break :blk conn.buf[0..nl];
+        };
+
+        const parsed = parser.parseHeadFromBuffer(conn.available(), head_end, server.header_limits, server.max_params) catch |err| {
             std.log.warn("Parse error: {any}", .{err});
             const refusal = requestParseRefusal(err);
-            writeErrorResponse(stream, arena_alloc, refusal.status, refusal.message, requestLineIsHead(first_line_raw), server.response_write_timeout_ms);
+            writeErrorResponse(stream, arena_alloc, refusal.status, refusal.message, requestLineIsHead(first_line_for_errors), server.response_write_timeout_ms);
             return;
         };
+        var request = parsed.request;
+        const head_bytes = parsed.bytes_consumed;
         defer request.deinit(arena_alloc);
+
+        // Body: copy from connection buffer leftovers, then socket (body deadline).
+        var body_from_buf: usize = 0;
+        if (request.headers.get("content-length")) |cl_str| {
+            const content_len = parseContentLength(cl_str) orelse {
+                writeErrorResponse(stream, arena_alloc, 400, "Bad Request", request.method == .HEAD, server.response_write_timeout_ms);
+                return;
+            };
+            if (content_len > server.max_body_size) {
+                conn.drainBody(head_bytes, @min(content_len, max_body_drain_bytes), server.body_timeout_ms);
+                writeErrorResponse(stream, arena_alloc, 413, "Payload Too Large", request.method == .HEAD, server.response_write_timeout_ms);
+                return;
+            }
+            if (content_len > 0) {
+                const body_buf = arena_alloc.alloc(u8, content_len) catch {
+                    writeErrorResponse(stream, arena_alloc, 500, "Internal Server Error", request.method == .HEAD, server.response_write_timeout_ms);
+                    return;
+                };
+                const extra: usize = if (conn.len > head_bytes) conn.len - head_bytes else 0;
+                body_from_buf = @min(extra, content_len);
+                if (body_from_buf > 0) {
+                    @memcpy(body_buf[0..body_from_buf], conn.buf[head_bytes..][0..body_from_buf]);
+                }
+                if (body_from_buf < content_len) {
+                    conn.readExactFromSocket(body_buf[body_from_buf..], server.body_timeout_ms) catch |err| {
+                        // Spent body budget → 408. Peer half-close / short body
+                        // → 400 (IncompleteBody), not a silent close — scanners
+                        // and clients must see a status line.
+                        if (conn.timed_out) {
+                            writeErrorResponse(stream, arena_alloc, 408, "Request Timeout", request.method == .HEAD, server.response_write_timeout_ms);
+                        } else if (err == error.EndOfStream) {
+                            writeErrorResponse(stream, arena_alloc, 400, "Bad Request", request.method == .HEAD, server.response_write_timeout_ms);
+                        }
+                        return;
+                    };
+                }
+                request.body = body_buf;
+            }
+        }
+        // Header values still borrow conn.buf[0..head_bytes] until after the response.
 
         // Track in-flight requests for graceful shutdown drain
         if (server.in_flight) |counter| {
@@ -2559,6 +2905,14 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
                 var w = stream.writer(server.io, &wbuf);
                 w.interface.writeAll("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n") catch return;
                 w.interface.flush() catch return;
+
+                // Leftover after this request's head+body becomes H2 frames.
+                // Do not `consume` first: upgrade_headers borrow conn_buf until
+                // the session copies them.
+                const h2_leftover_start = head_bytes + body_from_buf;
+                const h2_leftover = if (h2_leftover_start < conn.len) conn.buf[h2_leftover_start..conn.len] else &[_]u8{};
+                reader.clearReadDeadline();
+                reader.seedFromSlice(h2_leftover);
 
                 Http2Server.serveAfterUpgrade(
                     server.io,
@@ -2823,10 +3177,16 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
             return;
         }
 
+        // Drop this request's head (+ body bytes taken from the buffer) so
+        // header-value borrows end and any pipelined bytes sit at offset 0.
+        conn.consume(head_bytes + body_from_buf);
+
         // Keep-alive decision: default keep-alive unless Connection: close
         if (ctx.headers.get("connection")) |conn_val| {
             if (std.ascii.eqlIgnoreCase(conn_val, "close")) return;
         }
+        // Quiet wait only when nothing is already buffered for the next request.
+        is_idle = conn.len == 0;
     }
 }
 
@@ -6440,6 +6800,7 @@ test "fromEnv reads the documented variables off init.environ_map" {
     // Unset or malformed variables fall back to the documented defaults.
     try std.testing.expectEqual(@as(u32, 0), server.ws_write_timeout_ms);
     try std.testing.expectEqual(@as(u32, 2048), server.socket_buffer_bytes);
+    try std.testing.expectEqual(@as(u32, 0), server.idle_timeout_ms); // 0 = inherit header budget
 }
 
 test "fromEnv falls back to defaults when a variable is malformed" {

@@ -9692,7 +9692,8 @@ fn generateScaffoldMainZig(allocator: std.mem.Allocator, project_name: []const u
 
     try buf.appendSlice(allocator,
         \\pub fn main(init: std.process.Init) !void {
-        \\    const allocator = init.gpa;
+        \\    // Concurrent connection fibers: prefer smp_allocator over GPA (lock convoy under wrk).
+        \\    const allocator = std.heap.smp_allocator;
         \\    const env = init.environ_map;
         \\
         \\    // -- Config --

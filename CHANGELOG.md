@@ -1,5 +1,20 @@
 # Changelog
 
+## [Unreleased]
+
+### 性能：连接缓冲零拷贝头解析 + 旗舰 smp_allocator（参考 lighting）
+
+- `connFiber`：连接级读缓冲填到 `\r\n\r\n` 再原地解析；头 **value** 借自缓冲（仅
+  name 仍 lowercase+dupe）；pipelining 剩字节 `copyForwards`，少 per-line
+  `recv`。
+- `Config.idle_timeout_ms`（`0` = 继承 `header_timeout_ms`；`HTTP_IDLE_TIMEOUT_MS`）：
+  keep-alive 静默等首包与 slowloris 头预算拆开。
+- `writeResponse`：整次响应只 arm/clear 一次 `SO_SNDTIMEO`（不再按 fragment
+  反复 setsockopt）。
+- `BodyTooLarge`：有界 drain（≤256 KiB）再 413，降低 framing 错位风险。
+- 旗舰/scaffold 根分配器：`tenant-mgmt` / `shopdemo` / `zmsaas` / `basic` 与
+  `zmodu scaffold` 主模板改用 `std.heap.smp_allocator`。
+
 ## [0.43.7] - 2026-11-20
 
 ### 性能：HTTP 写出合并 + std.Io 热路径（参考 lighting，本机 wrk 验证）

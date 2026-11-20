@@ -7,7 +7,8 @@ const db_backend = @import("db/backend.zig");
 const schema = @import("db/schema.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+    // Concurrent connection fibers: prefer smp_allocator over GPA (lock convoy under wrk).
+    const allocator = std.heap.smp_allocator;
     const io = init.io;
 
     std.log.info("╔══════════════════════════════════════════╗", .{});
