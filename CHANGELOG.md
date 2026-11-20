@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.43.9] - 2026-11-20
 
 ### 完善：HTTP/1.1 零拷贝收尾 + productionProfile idle + 回归
 

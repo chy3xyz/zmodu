@@ -112,7 +112,7 @@ Removed outright in 0.17 — compile errors, not deprecation warnings:
 
 The full removed list for framework contributors, including POSIX signals and `crc.Crc32Iscsi`, is in [AGENTS.md](../../AGENTS.md) under "Zig 0.17.0 — what's REMOVED".
 
-## v0.43.8 之后（未发布批次）
+## v0.43.9
 
 1. **HTTP/1.1 header names and fully-buffered bodies** borrow from the connection buffer.
    Do not retain request header keys/values or `ctx.body` past the handler return
