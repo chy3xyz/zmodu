@@ -3088,7 +3088,8 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
         // request carried no fields" (see `parseUrlencodedForm`). `catch null`
         // here served a request whose form was never read as a 200 with an
         // empty `ctx.form`, and a client over `max_params` was never told.
-        switch (parseUrlencodedForm(arena_alloc, ctx.headers.get("content-type") orelse "", request.body, server.max_params)) {
+        // Body ownership already moved to `ctx` (and may borrow ConnReadBuf).
+        switch (parseUrlencodedForm(arena_alloc, ctx.headers.get("content-type") orelse "", ctx.body, server.max_params)) {
             .absent => {},
             .parsed => |form| ctx.form = form,
             .refused => |refusal| {
@@ -3153,8 +3154,9 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
                         .authority = ctx.headers.get("host") orelse "",
                         .headers = upgrade_headers.items,
                         // Already read in full by the parser above; stream 1 is
-                        // half-closed (remote) from the start.
-                        .body = request.body orelse "",
+                        // half-closed (remote) from the start. Body lives on
+                        // `ctx` after the steal (may borrow ConnReadBuf).
+                        .body = ctx.body orelse "",
                         .http2_settings = h2_settings,
                     },
                 ) catch |err| {
