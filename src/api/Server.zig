@@ -2700,11 +2700,14 @@ fn connFiber(server: *Server, stream: std.Io.net.Stream, allocator: std.mem.Allo
     defer arena.deinit();
     const arena_alloc = arena.allocator();
 
-    // Connection read buffer: pipelining leftovers + zero-copy header values.
-    const conn_cap = @max(server.header_limits.max_total_bytes + 1024, @as(usize, 8192));
-    const conn_storage = allocator.alloc(u8, conn_cap) catch return;
-    defer allocator.free(conn_storage);
-    var conn = ConnReadBuf.init(conn_storage, stream, server.io);
+    // Connection read buffer on the fiber stack (pipelining leftovers +
+    // zero-copy header values). Heap-allocating it would take a chunk-sized
+    // request through the process allocator on every accept — and an OOM
+    // trap there would close the socket with no status line. Sized to the
+    // default `HeaderLimits.max_total_bytes` (+1 KiB); a raised limit that
+    // exceeds this still ends at `TooManyHeaders` when the buffer fills.
+    var conn_storage: [16 * 1024 + 1024]u8 = undefined;
+    var conn = ConnReadBuf.init(&conn_storage, stream, server.io);
 
     // StreamReader is only for H2 / h2c handoff (frame loop expects Io.Reader).
     var reader: StreamReader = undefined;
