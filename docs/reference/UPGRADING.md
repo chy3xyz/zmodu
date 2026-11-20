@@ -112,11 +112,22 @@ Removed outright in 0.17 — compile errors, not deprecation warnings:
 
 The full removed list for framework contributors, including POSIX signals and `crc.Crc32Iscsi`, is in [AGENTS.md](../../AGENTS.md) under "Zig 0.17.0 — what's REMOVED".
 
-## v0.43.7 之后（未发布批次）
+## v0.43.8 之后（未发布批次）
+
+1. **HTTP/1.1 header names and fully-buffered bodies** borrow from the connection buffer.
+   Do not retain request header keys/values or `ctx.body` past the handler return
+   (`dropBorrowedConnSlices` runs before the next keep-alive read). Mutate request
+   headers with `ctx.putRequestHeader` / `ensureHeadersOwned` — raw `headers.put`
+   of owned slices while `headers_borrowed` mixes lifetimes.
+2. **H2 idle** follows `Config.idle_timeout_ms` via `effectiveIdleTimeoutMs()` (same as H1).
+3. **`productionProfile`**: `ProductionConfig.idle_timeout_ms` (default `0` = inherit
+   header budget) is applied to `Server.idle_timeout_ms`.
+
+## v0.43.8
 
 1. **`Config.idle_timeout_ms`**（default `0` = inherit `header_timeout_ms`; `HTTP_IDLE_TIMEOUT_MS`). Keep-alive quiet wait is no longer forced to the slowloris header budget.
 2. **Flagship / scaffold roots**: prefer `std.heap.smp_allocator` (tenant-mgmt, shopdemo, zmsaas, basic, `zmodu scaffold` main). Behaviour-preserving; GPA lock convoy under `wrk` otherwise.
-3. **HTTP/1.1 parse path**: connection buffer + zero-copy header values (internal). Request header values may borrow the connection buffer for the request lifetime — do not retain them past the handler return.
+3. **HTTP/1.1 parse path**: connection buffer + zero-copy header names/values (names lowercased in place). Do not retain request header keys or values past the handler return.
 
 ## v0.43.7
 

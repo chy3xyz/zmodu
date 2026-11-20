@@ -22,7 +22,8 @@ const zmodu = @import("zmodu");
 const http = zmodu.http;
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+    // Concurrent connection fibers: prefer smp_allocator over GPA (lock convoy under wrk).
+    const allocator = std.heap.smp_allocator;
     const io = init.io;
 
     const port: u16 = blk: {

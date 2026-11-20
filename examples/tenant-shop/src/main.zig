@@ -45,7 +45,8 @@ const outbox = @import("foundation/outbox.zig");
 const outbox_api = @import("foundation/outbox_api.zig");
 
 pub fn main(init: std.process.Init) !void {
-    const allocator = init.gpa;
+    // Concurrent connection fibers: prefer smp_allocator over GPA (lock convoy under wrk).
+    const allocator = std.heap.smp_allocator;
     const io = init.io;
 
     std.log.info("tenant-shop modulith scaffold starting", .{});

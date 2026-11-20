@@ -145,7 +145,8 @@ Run `zmodu.Preflight.run(...)` before `server.start()` to verify required enviro
 3. **No `@panic` or `catch unreachable` in request paths**: Enforced by `zmodu audit` rules `b19`–`b21`.
 4. **Freeze shared maps before serving**: Use `zmodu.FrozenMap` / `FrozenStringMap` for shared registries initialized at boot and read concurrently by workers or request fibers.
 5. **Lock discipline**: Never perform network I/O, disk I/O, or unbounded allocations while holding a mutex.
-6. **High-QPS process root**: use `std.heap.smp_allocator` (not `init.gpa`) when many `std.Io` connection fibers allocate concurrently — GPA lock convoy shows up under `wrk` before route logic does. Flagship examples and `zmodu scaffold` already do. Keep the default `Server.Config.socket_buffer_bytes = 2048` unless large responses need OS-sized send buffers (`0`). Optional: set `idle_timeout_ms` above `header_timeout_ms` for long keep-alive clients (0 inherits the header budget).
+6. **High-QPS process root**: use `std.heap.smp_allocator` (not `init.gpa`) when many `std.Io` connection fibers allocate concurrently — GPA lock convoy shows up under `wrk` before route logic does. Flagship / HTTP examples and `zmodu scaffold` already do. Keep the default `Server.Config.socket_buffer_bytes = 2048` unless large responses need OS-sized send buffers (`0`). Set `idle_timeout_ms` (or `ProductionConfig.idle_timeout_ms` via `productionProfile`) above `header_timeout_ms` for long keep-alive clients (`0` inherits the header budget).
+7. **HTTP throughput expectations**: the big loopback win is writev + `smp_allocator` + `socket_buffer_bytes=2048` (v0.43.7). Connection-buffer zero-copy parse (v0.43.8+) mainly helps multi-header / pipelined loads; warm tiny `/ping` is often already ceiling-bound. Compare with `bash scripts/bench-http-ab.sh` (`BASE_REF=v0.43.7` default; reports `/ping` `/json` `/headers` medians).
 
 ## 6. Testing & Verification
 

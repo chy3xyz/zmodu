@@ -192,6 +192,11 @@ pub const ProductionConfig = struct {
     over_limit_response: Server.OverLimitResponse = .close,
     /// Request-line + header deadline (slowloris). 0 disables.
     header_timeout_ms: u32 = 10_000,
+    /// Keep-alive quiet wait after a completed request (`Server.Config.idle_timeout_ms`).
+    /// `0` = inherit `header_timeout_ms` (same default as a bare Server).
+    /// Set higher than the header budget when long-lived clients should not be
+    /// closed by the slowloris timer while idle between requests.
+    idle_timeout_ms: u32 = 0,
     /// Overrides `Server.request_timeout_ms` when set (handler-stage budget).
     request_timeout_ms: ?u32 = null,
 
@@ -250,6 +255,7 @@ pub fn productionProfile(server: *Server, cfg: ProductionConfig, state: *Product
     server.max_connections = cfg.max_connections;
     server.over_limit_response = cfg.over_limit_response;
     server.header_timeout_ms = cfg.header_timeout_ms;
+    server.idle_timeout_ms = cfg.idle_timeout_ms;
     if (cfg.request_timeout_ms) |t| server.request_timeout_ms = t;
     if (cfg.max_connections == 0) {
         std.log.warn("[profile] productionProfile: max_connections=0 (unlimited) — set it to cap accept floods", .{});
@@ -447,6 +453,7 @@ test "productionProfile applies backpressure, metrics and probes" {
         .max_connections = 512,
         .over_limit_response = .unavailable,
         .header_timeout_ms = 4000,
+        .idle_timeout_ms = 120_000,
         .request_timeout_ms = 15_000,
         .dashboard = true,
     }, &state);
@@ -456,6 +463,7 @@ test "productionProfile applies backpressure, metrics and probes" {
     try std.testing.expectEqual(@as(usize, 512), server.max_connections);
     try std.testing.expectEqual(Server.OverLimitResponse.unavailable, server.over_limit_response);
     try std.testing.expectEqual(@as(u32, 4000), server.header_timeout_ms);
+    try std.testing.expectEqual(@as(u32, 120_000), server.idle_timeout_ms);
     try std.testing.expectEqual(@as(u32, 15_000), server.request_timeout_ms);
 
     // Middleware: security basics + security headers + tracing + request counter.

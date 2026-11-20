@@ -127,6 +127,22 @@ fn mainFiber(io: *std.Io, allocator: std.mem.Allocator, environ: *const std.proc
         }.handle,
     });
 
+    // Multi-header echo for ConnReadBuf / zero-copy head A/B (`scripts/bench-http-ab.sh`).
+    try server.addRoute(.{
+        .method = .GET,
+        .path = "/headers",
+        .handler = struct {
+            fn handle(ctx: *Context) anyerror!void {
+                var n: usize = 0;
+                var it = ctx.headers.iterator();
+                while (it.next()) |_| n += 1;
+                var buf: [32]u8 = undefined;
+                const body = try std.fmt.bufPrint(&buf, "{d}", .{n});
+                try ctx.text(200, body);
+            }
+        }.handle,
+    });
+
     // Spawn server + client fibers inside a single group so all their
     // futures are released deterministically before main returns.
     var server_group: std.Io.Group = .init;

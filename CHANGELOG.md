@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### 完善：HTTP/1.1 零拷贝收尾 + productionProfile idle + 回归
+
+- `parseHeadFromBuffer`：头 name **原地** lowercase，name/value 均借自连接缓冲；
+  整段已缓冲的 `Content-Length` body 同样借用（`body_borrowed`），不全量 memcpy。
+- **修复**：借用头/body 在 `consume` 后若 `Allocator.free`，会先 `@memset(..., undefined)`
+  （安全模式 `0xaa`）毒化下一请求 → `InvalidHeader`。现 `headers_borrowed` /
+  `body_borrowed` + `dropBorrowedConnSlices`；`putRequestHeader` / `ensureHeadersOwned`
+  避免 borrowed 与 owned `put` 混用。
+- `productionProfile`：接线 `ProductionConfig.idle_timeout_ms`（与 H1/H2 idle 同旋钮）。
+- H2 `read_idle_timeout_ms` 走 `effectiveIdleTimeoutMs()`。
+- 回归：pipelined GET / POST+body、`BodyTooLarge`→413 drain、idle 静默关连、
+  `putRequestHeader` 提升。
+- 示例 smp：`tenant-shop` / `zent-modulith` / `smuggling-e2e`；stress `/headers`；
+  `scripts/bench-http-ab.sh` 支持 `BASE_REF` + 多 Header 路径。
+- 评测口径：小 `/ping` 约持平 v0.43.7；多 Header 看 `/headers` 行。主收益仍在
+  writev+smp+2048。
+
 ## [0.43.8] - 2026-11-20
 
 ### 性能：连接缓冲零拷贝头解析 + 旗舰 smp_allocator（参考 lighting）

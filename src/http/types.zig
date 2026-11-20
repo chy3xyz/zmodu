@@ -199,8 +199,18 @@ pub const Context = struct {
     query: Params,
     params: std.StringHashMap([]const u8),
     headers: std.StringHashMap([]const u8),
+    /// When true, `headers` keys/values borrow the connection read buffer
+    /// (H1 `parseHeadFromBuffer` zero-copy path). `Allocator.free` memset's
+    /// `undefined` (0xaa in safe modes) *before* the arena no-op — freeing
+    /// those slices after `ConnReadBuf.consume` poisons the next pipelined
+    /// request. Skip freeing keys/values when set.
+    headers_borrowed: bool = false,
     form: ?Params = null,
     body: ?[]const u8 = null,
+    /// When true, `body` borrows bytes still in the connection read buffer
+    /// (entire Content-Length payload already buffered after the head). Drop
+    /// before `ConnReadBuf.consume` — same poison hazard as `headers_borrowed`.
+    body_borrowed: bool = false,
     response_body: std.ArrayList(u8),
     status_code: u16 = 200,
     response_headers: std.StringHashMap([]const u8),
@@ -278,7 +288,7 @@ pub const Context = struct {
     pub fn resetArena(self: *Context) void {
         self.query.deinit();
         self.freeStringMap(&self.params);
-        self.freeStringMap(&self.headers);
+        self.freeHeaders();
         self.freeStringMap(&self.attributes);
         self.freeStringMap(&self.response_headers);
         if (self.form) |*f| f.deinit();
@@ -303,6 +313,73 @@ pub const Context = struct {
         map.clearRetainingCapacity();
     }
 
+    fn freeHeaders(self: *Context) void {
+        if (!self.headers_borrowed) {
+            self.freeStringMap(&self.headers);
+        } else {
+            // Borrowed slices alias ConnReadBuf — never Allocator.free them
+            // (memset-undefined would corrupt pipelined leftovers).
+            self.headers.clearRetainingCapacity();
+        }
+        self.headers_borrowed = false;
+    }
+
+    /// Promote borrowed request headers to allocator-owned copies so subsequent
+    /// `headers.put` of owned slices is safe (mixed borrow/own would leak or
+    /// double-free under GPA). No-op when already owned. Arena callers reclaim
+    /// on `resetRequestArena` / connection end.
+    pub fn ensureHeadersOwned(self: *Context) !void {
+        if (!self.headers_borrowed) return;
+        var owned = std.StringHashMap([]const u8).init(self.allocator);
+        errdefer {
+            var it = owned.iterator();
+            while (it.next()) |e| {
+                self.allocator.free(e.key_ptr.*);
+                self.allocator.free(e.value_ptr.*);
+            }
+            owned.deinit();
+        }
+        var it = self.headers.iterator();
+        while (it.next()) |e| {
+            const k = try self.allocator.dupe(u8, e.key_ptr.*);
+            errdefer self.allocator.free(k);
+            const v = try self.allocator.dupe(u8, e.value_ptr.*);
+            errdefer self.allocator.free(v);
+            try owned.put(k, v);
+        }
+        self.headers.clearRetainingCapacity();
+        self.headers.deinit();
+        self.headers = owned;
+        self.headers_borrowed = false;
+    }
+
+    /// Insert/replace a request header with owned key/value. Promotes the map
+    /// out of the zero-copy borrow first when needed.
+    pub fn putRequestHeader(self: *Context, key: []const u8, value: []const u8) !void {
+        try self.ensureHeadersOwned();
+        const k = try self.allocator.dupe(u8, key);
+        errdefer self.allocator.free(k);
+        const v = try self.allocator.dupe(u8, value);
+        errdefer self.allocator.free(v);
+        if (self.headers.fetchRemove(key)) |old| {
+            self.allocator.free(old.key);
+            self.allocator.free(old.value);
+        }
+        try self.headers.put(k, v);
+    }
+
+    /// Drop ConnReadBuf aliases for headers/body before the buffer shifts.
+    pub fn dropBorrowedConnSlices(self: *Context) void {
+        if (self.headers_borrowed) {
+            self.headers.clearRetainingCapacity();
+            self.headers_borrowed = false;
+        }
+        if (self.body_borrowed) {
+            self.body = null;
+            self.body_borrowed = false;
+        }
+    }
+
     pub fn init(allocator: std.mem.Allocator, method: Method, path: []const u8) !Context {
         return Context{
             .allocator = allocator,
@@ -322,7 +399,7 @@ pub const Context = struct {
         self.query.deinit();
         self.freeStringMap(&self.params);
         self.params.deinit();
-        self.freeStringMap(&self.headers);
+        self.freeHeaders();
         self.headers.deinit();
         if (self.form) |*f| f.deinit();
         self.response_body.deinit(self.allocator);
@@ -1365,4 +1442,23 @@ pub fn deepCopy(value: anytype, allocator: std.mem.Allocator) !@TypeOf(value) {
         },
         else => return value,
     }
+}
+
+test "putRequestHeader promotes borrowed headers before insert" {
+    const allocator = std.testing.allocator;
+    var ctx = try Context.init(allocator, .GET, "/x");
+    defer ctx.deinit();
+
+    // Simulate zero-copy borrow: keys/values alias a stack buffer.
+    var raw = "Host: example\r\n".*;
+    const name = raw[0..4];
+    for (name) |*c| c.* = std.ascii.toLower(c.*);
+    const value = raw[6 .. raw.len - 2];
+    try ctx.headers.put(name, value);
+    ctx.headers_borrowed = true;
+
+    try ctx.putRequestHeader("x-extra", "1");
+    try std.testing.expect(!ctx.headers_borrowed);
+    try std.testing.expectEqualStrings("example", ctx.headers.get("host").?);
+    try std.testing.expectEqualStrings("1", ctx.headers.get("x-extra").?);
 }
