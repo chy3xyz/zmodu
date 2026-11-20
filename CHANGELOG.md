@@ -1,6 +1,6 @@
 # Changelog
 
-## [Unreleased]
+## [0.43.8] - 2026-11-20
 
 ### 性能：连接缓冲零拷贝头解析 + 旗舰 smp_allocator（参考 lighting）
 
